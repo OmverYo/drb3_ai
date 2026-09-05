@@ -1,0 +1,19 @@
+train: train/images
+val: valid/images
+test: test/images
+
+names: 
+  0: cha_green
+  1: cha_red
+  2: jol_green
+  3: jol_red
+  4: ma_green
+  5: ma_red
+  6: po_green
+  7: po_red
+  8: sa_green
+  9: sa_red
+  10: sang_green
+  11: sang_red
+  12: wang_green
+  13: wang_red

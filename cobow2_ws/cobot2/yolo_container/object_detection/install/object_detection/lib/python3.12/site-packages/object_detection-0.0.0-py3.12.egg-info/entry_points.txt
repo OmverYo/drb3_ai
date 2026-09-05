@@ -1,0 +1,3 @@
+[console_scripts]
+aruco = object_detection.aruco_test:main
+object_detection = object_detection.detection:main

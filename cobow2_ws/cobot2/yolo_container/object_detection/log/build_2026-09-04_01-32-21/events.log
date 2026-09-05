@@ -1,0 +1,62 @@
+[0.000000] (-) TimerEvent: {}
+[0.000252] (object_detection) JobQueued: {'identifier': 'object_detection', 'dependencies': OrderedDict()}
+[0.000394] (object_detection) JobStarted: {'identifier': 'object_detection'}
+[0.099836] (-) TimerEvent: {}
+[0.200118] (-) TimerEvent: {}
+[0.300355] (-) TimerEvent: {}
+[0.400572] (-) TimerEvent: {}
+[0.404150] (object_detection) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', 'build/object_detection', 'build', '--build-base', '/ros2_ws/src/object_detection/build/object_detection/build', 'install', '--record', '/ros2_ws/src/object_detection/build/object_detection/install.log', '--install-scripts', '$base/lib/object_detection', '--single-version-externally-managed', 'install_data'], 'cwd': '/ros2_ws/src/object_detection', 'env': {'HOSTNAME': 'MS-07', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/opt/ros/jazzy/lib/x86_64-linux-gnu:/opt/ros/jazzy/lib', 'HOME': '/root', 'CYCLONEDDS_URI': 'file:///cyclonedds.xml', 'OLDPWD': '/ros2_ws/src/object_detection/object_detection', 'PYTHONUNBUFFERED': '1', 'ROS_PYTHON_VERSION': '3', 'ROS_DISTRO': 'jazzy', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'TERM': 'xterm', 'QT_X11_NO_MITSHM': '1', 'PATH': '/opt/ros/jazzy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'DISPLAY': ':1', 'LANG': 'C.UTF-8', 'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.avif=01;35:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:*~=00;90:*#=00;90:*.bak=00;90:*.crdownload=00;90:*.dpkg-dist=00;90:*.dpkg-new=00;90:*.dpkg-old=00;90:*.dpkg-tmp=00;90:*.old=00;90:*.orig=00;90:*.part=00;90:*.rej=00;90:*.rpmnew=00;90:*.rpmorig=00;90:*.rpmsave=00;90:*.swp=00;90:*.tmp=00;90:*.ucf-dist=00;90:*.ucf-new=00;90:*.ucf-old=00;90:', 'ROS_DOMAIN_ID': '70', 'AMENT_PREFIX_PATH': '/opt/ros/jazzy', 'ROS_AUTOMATIC_DISCOVERY_RANGE': 'SUBNET', 'PWD': '/ros2_ws/src/object_detection/build/object_detection', 'LC_ALL': 'C.UTF-8', 'PYTHONPATH': '/ros2_ws/src/object_detection/build/object_detection/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages:/opt/ros/jazzy/lib/python3.12/site-packages', 'COLCON': '1'}, 'shell': False}
+[0.500764] (-) TimerEvent: {}
+[0.537668] (object_detection) StdoutLine: {'line': b'running egg_info\n'}
+[0.537901] (object_detection) StdoutLine: {'line': b'creating build/object_detection/object_detection.egg-info\n'}
+[0.545964] (object_detection) StdoutLine: {'line': b'writing build/object_detection/object_detection.egg-info/PKG-INFO\n'}
+[0.546182] (object_detection) StdoutLine: {'line': b'writing dependency_links to build/object_detection/object_detection.egg-info/dependency_links.txt\n'}
+[0.546292] (object_detection) StdoutLine: {'line': b'writing entry points to build/object_detection/object_detection.egg-info/entry_points.txt\n'}
+[0.546389] (object_detection) StdoutLine: {'line': b'writing requirements to build/object_detection/object_detection.egg-info/requires.txt\n'}
+[0.546462] (object_detection) StdoutLine: {'line': b'writing top-level names to build/object_detection/object_detection.egg-info/top_level.txt\n'}
+[0.546533] (object_detection) StdoutLine: {'line': b"writing manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'\n"}
+[0.562486] (object_detection) StdoutLine: {'line': b"reading manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'\n"}
+[0.562948] (object_detection) StdoutLine: {'line': b"writing manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'\n"}
+[0.563058] (object_detection) StdoutLine: {'line': b'running build\n'}
+[0.563136] (object_detection) StdoutLine: {'line': b'running build_py\n'}
+[0.563238] (object_detection) StdoutLine: {'line': b'creating /ros2_ws/src/object_detection/build/object_detection/build\n'}
+[0.563354] (object_detection) StdoutLine: {'line': b'creating /ros2_ws/src/object_detection/build/object_detection/build/lib\n'}
+[0.563434] (object_detection) StdoutLine: {'line': b'creating /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563513] (object_detection) StdoutLine: {'line': b'copying object_detection/aruco_test.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563643] (object_detection) StdoutLine: {'line': b'copying object_detection/aruco.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563719] (object_detection) StdoutLine: {'line': b'copying object_detection/realsense.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563793] (object_detection) StdoutLine: {'line': b'copying object_detection/__init__.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563885] (object_detection) StdoutLine: {'line': b'copying object_detection/yolo.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.563957] (object_detection) StdoutLine: {'line': b'copying object_detection/detection.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection\n'}
+[0.564028] (object_detection) StdoutLine: {'line': b'running install\n'}
+[0.567692] (object_detection) StdoutLine: {'line': b'running install_lib\n'}
+[0.575613] (object_detection) StdoutLine: {'line': b'creating /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.575778] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/aruco_test.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.575895] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/aruco.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.576013] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/realsense.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.576094] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/__init__.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.576172] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/yolo.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.576258] (object_detection) StdoutLine: {'line': b'copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/detection.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection\n'}
+[0.576351] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/aruco_test.py to aruco_test.cpython-312.pyc\n'}
+[0.577906] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/aruco.py to aruco.cpython-312.pyc\n'}
+[0.578428] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/realsense.py to realsense.cpython-312.pyc\n'}
+[0.578827] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/__init__.py to __init__.cpython-312.pyc\n'}
+[0.578950] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/yolo.py to yolo.cpython-312.pyc\n'}
+[0.579844] (object_detection) StdoutLine: {'line': b'byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/detection.py to detection.cpython-312.pyc\n'}
+[0.580745] (object_detection) StdoutLine: {'line': b'running install_data\n'}
+[0.580823] (object_detection) StdoutLine: {'line': b'copying package.xml -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection\n'}
+[0.580929] (object_detection) StdoutLine: {'line': b'creating /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource\n'}
+[0.581001] (object_detection) StdoutLine: {'line': b'copying resource/object_detection -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource\n'}
+[0.581069] (object_detection) StdoutLine: {'line': b'copying resource/best.pt -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource\n'}
+[0.583030] (object_detection) StdoutLine: {'line': b'copying resource/yolov8n_tools_0122.pt -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource\n'}
+[0.590178] (object_detection) StdoutLine: {'line': b'copying resource/class_name_tool.json -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource\n'}
+[0.590353] (object_detection) StdoutLine: {'line': b'running install_egg_info\n'}
+[0.598210] (object_detection) StdoutLine: {'line': b'Copying build/object_detection/object_detection.egg-info to /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection-0.0.0-py3.12.egg-info\n'}
+[0.598713] (object_detection) StdoutLine: {'line': b'running install_scripts\n'}
+[0.600863] (-) TimerEvent: {}
+[0.656036] (object_detection) StdoutLine: {'line': b'Installing aruco script to /ros2_ws/src/object_detection/install/object_detection/lib/object_detection\n'}
+[0.656214] (object_detection) StdoutLine: {'line': b'Installing object_detection script to /ros2_ws/src/object_detection/install/object_detection/lib/object_detection\n'}
+[0.656386] (object_detection) StdoutLine: {'line': b"writing list of installed files to '/ros2_ws/src/object_detection/build/object_detection/install.log'\n"}
+[0.672803] (object_detection) CommandEnded: {'returncode': 0}
+[0.682089] (object_detection) JobEnded: {'identifier': 'object_detection', 'rc': 0}
+[0.682748] (-) EventReactorShutdown: {}

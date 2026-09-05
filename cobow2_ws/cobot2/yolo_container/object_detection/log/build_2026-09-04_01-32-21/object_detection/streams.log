@@ -1,0 +1,51 @@
+[0.404s] Invoking command in '/ros2_ws/src/object_detection': PYTHONPATH=/ros2_ws/src/object_detection/build/object_detection/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/object_detection build --build-base /ros2_ws/src/object_detection/build/object_detection/build install --record /ros2_ws/src/object_detection/build/object_detection/install.log --install-scripts $base/lib/object_detection --single-version-externally-managed install_data
+[0.537s] running egg_info
+[0.538s] creating build/object_detection/object_detection.egg-info
+[0.546s] writing build/object_detection/object_detection.egg-info/PKG-INFO
+[0.546s] writing dependency_links to build/object_detection/object_detection.egg-info/dependency_links.txt
+[0.546s] writing entry points to build/object_detection/object_detection.egg-info/entry_points.txt
+[0.546s] writing requirements to build/object_detection/object_detection.egg-info/requires.txt
+[0.546s] writing top-level names to build/object_detection/object_detection.egg-info/top_level.txt
+[0.546s] writing manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'
+[0.562s] reading manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'
+[0.563s] writing manifest file 'build/object_detection/object_detection.egg-info/SOURCES.txt'
+[0.563s] running build
+[0.563s] running build_py
+[0.563s] creating /ros2_ws/src/object_detection/build/object_detection/build
+[0.563s] creating /ros2_ws/src/object_detection/build/object_detection/build/lib
+[0.563s] creating /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.563s] copying object_detection/aruco_test.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.563s] copying object_detection/aruco.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.563s] copying object_detection/realsense.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.563s] copying object_detection/__init__.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.564s] copying object_detection/yolo.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.564s] copying object_detection/detection.py -> /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection
+[0.564s] running install
+[0.567s] running install_lib
+[0.575s] creating /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.575s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/aruco_test.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/aruco.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/realsense.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/__init__.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/yolo.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] copying /ros2_ws/src/object_detection/build/object_detection/build/lib/object_detection/detection.py -> /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection
+[0.576s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/aruco_test.py to aruco_test.cpython-312.pyc
+[0.578s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/aruco.py to aruco.cpython-312.pyc
+[0.578s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/realsense.py to realsense.cpython-312.pyc
+[0.578s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/__init__.py to __init__.cpython-312.pyc
+[0.579s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/yolo.py to yolo.cpython-312.pyc
+[0.580s] byte-compiling /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection/detection.py to detection.cpython-312.pyc
+[0.580s] running install_data
+[0.581s] copying package.xml -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection
+[0.581s] creating /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource
+[0.581s] copying resource/object_detection -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource
+[0.581s] copying resource/best.pt -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource
+[0.583s] copying resource/yolov8n_tools_0122.pt -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource
+[0.590s] copying resource/class_name_tool.json -> /ros2_ws/src/object_detection/install/object_detection/share/object_detection/resource
+[0.590s] running install_egg_info
+[0.598s] Copying build/object_detection/object_detection.egg-info to /ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages/object_detection-0.0.0-py3.12.egg-info
+[0.598s] running install_scripts
+[0.656s] Installing aruco script to /ros2_ws/src/object_detection/install/object_detection/lib/object_detection
+[0.656s] Installing object_detection script to /ros2_ws/src/object_detection/install/object_detection/lib/object_detection
+[0.656s] writing list of installed files to '/ros2_ws/src/object_detection/build/object_detection/install.log'
+[0.673s] Invoked command in '/ros2_ws/src/object_detection' returned '0': PYTHONPATH=/ros2_ws/src/object_detection/build/object_detection/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/ros2_ws/src/object_detection/install/object_detection/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base build/object_detection build --build-base /ros2_ws/src/object_detection/build/object_detection/build install --record /ros2_ws/src/object_detection/build/object_detection/install.log --install-scripts $base/lib/object_detection --single-version-externally-managed install_data
