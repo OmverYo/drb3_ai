@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from pymongo import MongoClient
 from datetime import datetime
 from flask_socketio import SocketIO
+from db_config import MONGODB_URI  # 설정 파일에서 URI 불러오기
 import os
 
 app = Flask(__name__)
@@ -18,8 +19,8 @@ def serve_index():
 def serve_frontend_asset():
     return send_from_directory(app.root_path, request.path.lstrip('/'))
 
-# MongoDB 연결
-client = MongoClient('mongodb+srv://rokey9b3_db_user:dm5aOYnGy087joZV@rokey9b3.cn7wqte.mongodb.net/?appName=rokey9b3')
+# MongoDB 연결 (db_config.py의 변수 사용)
+client = MongoClient(MONGODB_URI)
 db = client.janggi
 boards_col = db.boards
 
@@ -72,41 +73,39 @@ def update_board():
     
     return jsonify({'message': '보드가 업데이트되고 전체 전송되었습니다'})
 
-# === [추가] 실시간 업데이트 테스트용 API ===
-# @app.route('/api/test_move', methods=['GET'])
-# def test_move():
-#     """웹브라우저에서 이 주소로 접속하면 가운데 초나라 쫄이 앞뒤로 움직입니다."""
-#     board_doc = boards_col.find_one({'doc_id': DEMO_DOC_ID})
-#     if not board_doc:
-#         return jsonify({'error': '보드가 없습니다'}), 404
+# === 실시간 업데이트 테스트용 API ===
+@app.route('/api/test_move', methods=['GET'])
+def test_move():
+    """웹브라우저에서 이 주소로 접속하면 가운데 초나라 쫄이 앞뒤로 움직입니다."""
+    board_doc = boards_col.find_one({'doc_id': DEMO_DOC_ID})
+    if not board_doc:
+        return jsonify({'error': '보드가 없습니다'}), 404
     
-#     board = board_doc['board']
+    board = board_doc['board']
     
-#     # 초나라 가운데 쫄(jol_green) 위치를 토글 (row 3 <-> row 4)
-#     if board[3][4] == 'jol_green':
-#         board[3][4] = None
-#         board[4][4] = 'jol_green'
-#         turn = 'red'
-#     else:
-#         board[4][4] = None
-#         board[3][4] = 'jol_green'
-#         turn = 'black'
+    # 초나라 가운데 쫄(jol_green) 위치를 토글 (row 3 <-> row 4)
+    if board[3][4] == 'jol_green':
+        board[3][4] = None
+        board[4][4] = 'jol_green'
+        turn = 'red'
+    else:
+        board[4][4] = None
+        board[3][4] = 'jol_green'
+        turn = 'green'
 
-#     # 1. DB 업데이트
-#     boards_col.update_one(
-#         {'doc_id': DEMO_DOC_ID},
-#         {'$set': {
-#             'board': board,
-#             'currentTurn': turn,
-#             'updatedAt': datetime.now()
-#         }}
-#     )
+    boards_col.update_one(
+        {'doc_id': DEMO_DOC_ID},
+        {'$set': {
+            'board': board,
+            'currentTurn': turn,
+            'updatedAt': datetime.now()
+        }}
+    )
     
-#     # 2. 웹소켓으로 전체 화면에 갱신 신호 발송
-#     data = {'board': board, 'currentTurn': turn}
-#     socketio.emit('board_updated', data)
+    data = {'board': board, 'currentTurn': turn}
+    socketio.emit('board_updated', data)
     
-#     return jsonify({'message': '테스트 이동 성공! 웹사이트 화면이 실시간으로 변했는지 확인하세요.', 'turn': turn})
+    return jsonify({'message': '테스트 이동 성공! 웹사이트 화면이 실시간으로 변했는지 확인하세요.', 'turn': turn})
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)
