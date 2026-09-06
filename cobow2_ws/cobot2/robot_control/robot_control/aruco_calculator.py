@@ -156,7 +156,7 @@ class ArucoCalculator:
         return np.array([col0 * GRID_X_MM, row0 * GRID_Y_MM, 0.0, 1.0], dtype=np.float64)
 
     # ========================================================
-    # Camera 준비
+    # Camera 준비   
     # ========================================================
 
     def wait_until_ready(self, timeout_sec=5.0):

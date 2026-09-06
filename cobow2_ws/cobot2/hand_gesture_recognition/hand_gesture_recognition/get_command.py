@@ -20,6 +20,9 @@ PACKAGE_NAME = "hand_gesture_recognition"
 PACKAGE_PATH = get_package_share_directory(PACKAGE_NAME)
 RESOURCE_PATH = os.path.join(PACKAGE_PATH, "resource")
 MODEL_PATH = os.path.join(RESOURCE_PATH, "gesture_recognizer_Pjv3_0905_01.task")
+# get_command 서비스가 성공적으로 확정한 커맨드 한 줄 한 줄을 계속 누적해서 남기는 로그 파일.
+# 파일이 없으면 open(..., "a")가 자동으로 새로 만든다.
+GAME_LOG_PATH = os.path.join(RESOURCE_PATH, "game.txt")
 
 DISPLAY_FPS = 30.0
 
@@ -131,6 +134,24 @@ class GetCommand(Node):
         self.viewer = WebcamViewer() if self.show_window else None
 
         self._quit_requested = False
+
+        # --- 응답 로그(game.txt) ---
+        # 파일이 없으면 "a" 모드가 자동으로 생성한다(디렉터리는 자동으로 안 만들어지므로
+        # makedirs로 먼저 보장해야 한다). 노드가 살아있는 동안 계속 열어두고 서비스가
+        # 응답을 확정할 때마다 한 줄씩 추가로 쓴 뒤 destroy_node에서 닫는다.
+        self._game_log_lock = threading.Lock()
+        self._game_log_file = None
+        game_log_path = os.path.abspath(GAME_LOG_PATH)
+        try:
+            os.makedirs(os.path.dirname(game_log_path), exist_ok=True)
+            self._game_log_file = open(game_log_path, "a", encoding="utf-8")
+            self.get_logger().info(f"게임 로그 파일: {game_log_path}")
+        except OSError as e:
+            # 여기서 실패해도 노드 자체(카메라/서비스)는 계속 뜨게 하고, 로그만 비활성화한다.
+            self.get_logger().error(
+                f"game.txt를 열 수 없습니다 ({game_log_path}): {e}. "
+                "GAME_LOG_PATH 상수를 쓰기 가능한 경로로 바꿔주세요."
+            )
 
         # 카메라는 노드 생성 시 한 번만 켜서 노드가 살아있는 동안(=패키지 종료까지) 계속 스트리밍합니다.
         try:
@@ -306,6 +327,17 @@ class GetCommand(Node):
                 # 맞게 release/bucket까지 유효하게 도달한 경우에만 응답을 확정한다.
                 self._qualify_event.set()
 
+    def _append_game_log(self, line: str):
+        """확정된 커맨드 한 줄을 game.txt에 추가한다(응답 1회당 1줄, 계속 누적)."""
+        if self._game_log_file is None:
+            return
+        try:
+            with self._game_log_lock:
+                self._game_log_file.write(line + "\n")
+                self._game_log_file.flush()
+        except Exception as e:
+            self.get_logger().error(f"game.txt 기록 실패: {e}")
+
     def get_command(self, request, response):
         """조건 1: 요청이 들어온 시점부터 새로 감지되는 결과만 누적해서 기다립니다.
         (요청 이전에 이미 누적돼 있던 값은 버리고 새로 시작)
@@ -335,6 +367,8 @@ class GetCommand(Node):
         with self._state_lock:
             message = " ".join(self._accumulated)
             self._accumulated = []
+
+        self._append_game_log(message)
 
         response.success = True
         response.message = message
@@ -374,8 +408,13 @@ class GetCommand(Node):
         self.cam.close_stream()
         if self.viewer is not None:
             self.viewer.close()
+        try:
+            with self._game_log_lock:
+                if self._game_log_file is not None:
+                    self._game_log_file.close()
+        except Exception as e:
+            self.get_logger().error(f"game.txt 닫기 실패: {e}")
         super().destroy_node()
-
 
 def main():
     rclpy.init()

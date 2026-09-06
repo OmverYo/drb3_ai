@@ -26,8 +26,10 @@ ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 60, 60
 BUCKET_POS = [634.94, -8.82, 59.23]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
 JHOME_POS = [0, -30, 90, 0, 90, 0]
-PLACE_LIFT = 250.0
-PLACE_Z_OFFSET = 50.0
+PLACE_LIFT = 150.0
+PLACE_X_OFFSET = 2.0
+PLACE_Y_OFFSET = -8.0
+PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
 TOOLCHARGER_IP = "192.168.1.1"
 TOOLCHARGER_PORT = "502"
@@ -193,6 +195,10 @@ class RobotController(Node):
                 # 이때 get_board_target_pos 내부에서 계산시 z 값은 realsense depth 카메라로 부터 받아서 사용해야 하므로, 필수로 켜줘야 함.
                 #1행 1열 부터 시작하는 텍스트 '(row,colunm)' 형태로 받아서 좌표값 xyz 로 반환. 
                 board_xyz_before = self.get_board_target_pos(board_pos_before)
+                # realsense 값 그대로 사용이 안됨. aruco 계산 시 보정 필요.
+                board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
+                board_xyz_before[1] = board_xyz_before[1] + PLACE_Y_OFFSET
+                board_xyz_before[2] = board_xyz_before[2] + PLACE_Z_OFFSET
                 # after 위치는 판 내부 or 버킷(딴 상대방 말) 
                 if text_split[-1] == 'release' :
                     board_pos_after = f'{text_split[4]},{text_split[6]}'
@@ -362,12 +368,15 @@ class RobotController(Node):
         return target_pos
 
     def init_robot(self):
-        JReady = [-18, 2, 66, 0, 111, -17.6]
+        JReady = [-13, 21, 43, 0, 115.5, -13]
         movej(JReady, vel=VELOCITY, acc=ACC)
         gripper.open_gripper()
         mwait()
 
     def pick_and_place_target(self, target_pos, board_xyz):
+
+        lift_pos = target_pos[:2] + [target_pos[2] + PLACE_LIFT] + target_pos[3:]
+        movel(lift_pos, vel=VELOCITY, acc=ACC)
         movel(target_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.close_gripper()
@@ -376,18 +385,29 @@ class RobotController(Node):
             time.sleep(0.5)
         mwait()
 
-        lift_pos = target_pos[:2] + [target_pos[2] + PLACE_LIFT] + target_pos[3:]
+        
         movel(lift_pos, vel=VELOCITY, acc=ACC)
         mwait()
 
-        place_pos = [float(board_xyz[0]),float(board_xyz[1]),float(board_xyz[2] + PLACE_Z_OFFSET), ] + target_pos[3:]
+        hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + target_pos[3:]
+        place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
         self.get_logger().info(f"Janggi place position: {place_pos}")
+
+        movel(hover_pos, vel=VELOCITY, acc=ACC)
+        mwait()
+
+
         movel(place_pos, vel=VELOCITY, acc=ACC)
         mwait()
 
         gripper.open_gripper()
         while rclpy.ok() and gripper.get_status()[0]:
             time.sleep(0.5)
+
+        movel(hover_pos, vel=VELOCITY, acc=ACC)
+        mwait()
+        
+         
 
 
 def main(args=None):
