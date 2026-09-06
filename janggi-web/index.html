@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>장기 — 로봇 인터페이스</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@500;700;800;900&display=swap" rel="stylesheet">
+<!-- 분리된 CSS 연결 -->
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="title-row">
+      <div class="title-block">
+        <div class="code-line">T&#8209;00 &middot; JANGGI</div>
+        <h1>장기</h1>
+        <p class="sub">"ROBOT INTERFACE" &middot; M0609 &middot; ROS2</p>
+      </div>
+      <div class="sys-block" id="connIndicator">
+        <div class="row"><span class="k">SYS</span><span><span class="dot" style="background:#4ecca3;"></span><span id="connText">WEB SOCKET &middot; CONNECTED</span></span></div>
+        <div class="row"><span class="k">ID</span><span id="displaySessionId">대기 중</span></div>
+      </div>
+    </div>
+    <div class="rule"></div>
+  </header>
+
+  <div class="layout">
+    <section class="board-panel">
+      <div class="board-head">
+        <h2>대국</h2>
+        <span class="move-no" id="moveNo">실시간 연동 중</span>
+      </div>
+      <svg id="board" viewBox="0 0 480 530" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="board-foot">
+        <div class="legend">
+          <span class="l-han"><i></i>한(漢) &middot; 로봇(RED)</span>
+          <span class="l-cho"><i></i>초(楚) &middot; 사용자(GREEN)</span>
+        </div>
+        <span>실시간 화면 갱신 중</span>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="tag">
+        <h3><span class="glyph">VOICE</span></h3>
+        <p class="readout" id="voiceReadout">대기 중<span class="deg">&deg;</span></p>
+        <p class="sub" id="voiceSub">STT 매칭 대기</p>
+        <div class="meter"><i id="voiceMeter" style="width:0%"></i></div>
+      </div>
+
+      <div class="tag">
+        <h3><span class="glyph">GESTURE</span></h3>
+        <p class="readout" id="gestureReadout">대기 중<span class="deg">&deg;</span></p>
+        <p class="sub" id="gestureSub">카메라 분석 대기</p>
+        <div class="meter"><i id="gestureMeter" style="width:0%"></i></div>
+      </div>
+
+      <div class="tag">
+        <h3><span class="glyph">ARM · M0609</span></h3>
+        <div class="status-line idle" id="armStatusLine"><span class="stone"></span><b id="armBadge">IDLE</b></div>
+        <p class="arm-target" id="armTarget">현재 동작 없음</p>
+      </div>
+    </aside>
+  </div>
+
+  <div class="bottom">
+    <div class="seal-wrap cho" id="turnSeal">
+      <div class="stamp" id="turnStamp">楚</div>
+      <div class="turn-text">TURN<b id="turnLabel">사용자</b></div>
+    </div>
+    <div class="log" id="logStrip">
+      <span class="entry">서버 연결 대기 중...</span>
+    </div>
+  </div>
+
+  <footer class="hint">
+    Flask 서버 웹소켓(Socket.IO) 실시간 데이터 연동 중
+  </footer>
+
+</div>
+
+<!-- 웹소켓 라이브러리 및 분리된 JS 연결 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,3 +1,5 @@
 /build/
 /install/
 /log/
+
+db_config.py
