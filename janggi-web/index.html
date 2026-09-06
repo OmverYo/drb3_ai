@@ -6,7 +6,6 @@
 <title>장기 — 로봇 인터페이스</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@500;700;800;900&display=swap" rel="stylesheet">
-<!-- 분리된 CSS 연결 -->
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -21,7 +20,7 @@
       </div>
       <div class="sys-block" id="connIndicator">
         <div class="row"><span class="k">SYS</span><span><span class="dot" style="background:#4ecca3;"></span><span id="connText">WEB SOCKET &middot; CONNECTED</span></span></div>
-        <div class="row"><span class="k">ID</span><span id="displaySessionId">대기 중</span></div>
+        <div class="row"><span class="k">ID</span><span id="displaySessionId" style="color:#4ecca3;">DEMO MODE</span></div>
       </div>
     </div>
     <div class="rule"></div>
@@ -72,17 +71,16 @@
       <div class="turn-text">TURN<b id="turnLabel">사용자</b></div>
     </div>
     <div class="log" id="logStrip">
-      <span class="entry">서버 연결 대기 중...</span>
+      <span class="entry">서버 연결 완료 - 대기 중...</span>
     </div>
   </div>
 
   <footer class="hint">
-    Flask 서버 웹소켓(Socket.IO) 실시간 데이터 연동 중
+    단일 데모 모드 (세션 비활성화) &middot; 웹소켓 실시간 연동 중
   </footer>
 
 </div>
 
-<!-- 웹소켓 라이브러리 및 분리된 JS 연결 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 <script src="app.js"></script>
 </body>
