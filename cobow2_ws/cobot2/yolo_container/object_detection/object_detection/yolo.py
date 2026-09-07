@@ -38,16 +38,16 @@ class YoloModel:
             time.sleep(0.01)
 
         if not frames:
-            print("No frames captured in %.2f seconds", duration)
+            print("No frames captured in %.2f seconds" % duration)
 
-        print("%d frames captured", len(frames))
+        print("%d frames captured" % len(frames))
         return list(frames.values())
 
     def get_best_detection(self, img_node, target):
         img_node.spin_once()
         frames = self.get_frames(img_node)
         if not frames:
-            return None
+            return None, None
 
         results = self.model(frames, verbose=False)
         print("classes: ")
@@ -66,6 +66,52 @@ class YoloModel:
             return None, None
         best_det = max(matches, key=lambda x: x["score"])
         return best_det["box"], best_det["score"]
+
+    def get_all_detections(self, img_node):
+        """Return the aggregated detections with model class names."""
+        img_node.spin_once()
+        frames = self.get_frames(img_node)
+        if not frames:
+            return []
+
+        results = self.model(frames, verbose=False)
+        detections = self._aggregate_detections(results)
+        return [
+            {
+                **detection,
+                "name": self.model.names[detection["label"]],
+            }
+            for detection in detections
+        ]
+
+    def get_board_detections(self, frame):
+        """Board-only path: infer on the exact ArUco snapshot.
+
+        No camera capture or cross-frame aggregation occurs here. General
+        object recognition uses get_best_detection/get_all_detections and
+        retains the original multi-frame processing. Both paths share weights.
+        """
+        if frame is None:
+            return []
+
+        results = self.model(frame, verbose=False)
+        detections = []
+        for res in results:
+            for box, score, label in zip(
+                res.boxes.xyxy.tolist(),
+                res.boxes.conf.tolist(),
+                res.boxes.cls.tolist(),
+            ):
+                label = int(label)
+                if not np.isfinite(score) or score < 0.1 or not np.all(np.isfinite(box)):
+                    continue
+                detections.append({
+                    'box': box,
+                    'score': float(score),
+                    'label': label,
+                    'name': self.model.names[label],
+                })
+        return detections
 
     def _aggregate_detections(self, results, confidence_threshold=0.1, iou_threshold=0.1):
         raw = []
