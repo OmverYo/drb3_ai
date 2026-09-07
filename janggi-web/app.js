@@ -172,6 +172,36 @@ function pushLog(text) {
   strip.scrollLeft = strip.scrollWidth;
 }
 
+// ARM UI 업데이트 헬퍼 함수
+function updateArmStatus(moveText) {
+    const badge = document.getElementById('armBadge');
+    const target = document.getElementById('armTarget');
+    const statusLine = document.getElementById('armStatusLine');
+
+    if (moveText) {
+        // 1. 상태를 항상 활성화(ACTIVE)로 유지
+        badge.textContent = 'ACTIVE';
+        statusLine.className = 'status-line moving';
+        
+        // 2. 처음 표시된 기본 텍스트("현재 동작 없음") 지우기 및 스크롤 설정
+        if (target.textContent === '현재 동작 없음') {
+            target.innerHTML = '';
+            target.style.maxHeight = '120px'; // 패널 최대 높이 설정
+            target.style.overflowY = 'auto';  // 내용이 넘치면 스크롤 생성
+        }
+        
+        // 3. 새로운 동작 기록 컨테이너 생성
+        const moveEntry = document.createElement('div');
+        moveEntry.style.paddingBottom = '6px';
+        moveEntry.style.marginBottom = '6px';
+        moveEntry.style.borderBottom = '1px dashed rgba(110, 110, 110, 0.3)'; // 구분선 추가
+        moveEntry.innerHTML = `<b>${moveText}</b>`;
+        
+        // 4. 새로운 기록을 가장 위쪽(첫 번째 자식)으로 추가
+        target.insertBefore(moveEntry, target.firstChild);
+    }
+}
+
 function parseBoardData(board2D) {
     let newPieces = [];
     for (let r = 0; r < 10; r++) {
@@ -185,27 +215,37 @@ function parseBoardData(board2D) {
     return newPieces;
 }
 
-// 웹소켓 이벤트 수신 (세션 검사 없음)
+// 웹소켓 이벤트 수신
 socket.on('board_updated', function(data) {
     pieces = parseBoardData(data.board);
     drawBoard();
     
     setTurn(data.currentTurn || 'red');
-    const time = new Date().toLocaleTimeString();
-    pushLog(`<b>${time}</b> 실시간 로봇 데이터 갱신 완료`);
+    
+    // DB에서 넘어온 lastMove 값이 있으면 ARM 상태 패널과 하단 로그에 표기
+    if (data.lastMove) {
+        updateArmStatus(data.lastMove);
+        const time = new Date().toLocaleTimeString();
+        pushLog(`<b>${time}</b> ${data.lastMove}`);
+    }
 });
 
 // 초기 구동 시 데모 보드 불러오기
 async function loadBoard() {
     try {
-        // 단일 데모 API 호출
         const res = await fetch(`${API_BASE}/api/board`);
         const data = await res.json();
         if (data && data.board) {
             pieces = parseBoardData(data.board);
             drawBoard();
             setTurn(data.currentTurn || 'red');
-            pushLog('최신 데모 장기판을 불러왔습니다.');
+            
+            if (data.lastMove) {
+                updateArmStatus(data.lastMove);
+                pushLog(`최근 기록: ${data.lastMove}`);
+            } else {
+                pushLog('최신 데모 장기판을 불러왔습니다.');
+            }
         }
     } catch (e) {
         console.error('보드 로드 실패:', e);
