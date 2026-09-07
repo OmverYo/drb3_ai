@@ -44,8 +44,8 @@ class ObjectDetectionNode(Node):
         self.board_sync_enabled = False
         self.board_sync_service = self.create_service(
             SetBool,
-            'enable_board_sync',
-            self.handle_enable_board_sync
+            '/set_board_sync',
+            self.handle_set_board_sync
         )
         self.board_timer = self.create_timer(sync_interval, self._sync_board)
         self.create_timer(sync_interval, self._sync_board)
@@ -131,7 +131,20 @@ class ObjectDetectionNode(Node):
             self.get_logger().error("Board reference points cannot define a homography.")
             return None
 
+    def handle_set_board_sync(self, request, response):
+        """robot_control의 요청: False이면 동기화 중지, True이면 동기화 시작."""
+        self.board_sync_enabled = bool(request.data)
+        response.success = True
+        response.message = (
+            "Board sync enabled." if self.board_sync_enabled else "Board sync disabled."
+        )
+        self.get_logger().info(response.message)
+        return response
+
     def _sync_board(self):
+        # 2초 타이머는 유지하고, 꺼져 있으면 동기화/API 전송을 건너뜀.
+        if not self.board_sync_enabled:
+            return
         # One snapshot for BOTH detectors; never average boxes from another pose.
         self.img_node.spin_once()
         frame = self.img_node.get_color_frame()

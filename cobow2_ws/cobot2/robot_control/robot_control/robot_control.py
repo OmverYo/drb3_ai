@@ -81,7 +81,7 @@ class RobotController(Node):
     def __init__(self, mode: str = MODE):
         super().__init__("pick_and_place")
         self.mode = mode
-        self.init_robot()
+        
 
         # MultiThreadedExecutor 하에서 서비스 응답 콜백/타이머 콜백이 서로 블로킹 없이
         # 동시에 처리될 수 있도록 재진입 가능한 콜백 그룹을 사용한다.
@@ -221,7 +221,7 @@ class RobotController(Node):
                 # realsense 값 그대로 사용이 안됨. aruco 계산 시 보정 필요.
                 board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
                 board_xyz_before[1] = board_xyz_before[1] + PLACE_Y_OFFSET
-                board_xyz_before[2] = board_xyz_before[2] + PLACE_Z_OFFSET
+                board_xyz_before[2] = 3
                 # after 위치는 판 내부 or 버킷(딴 상대방 말) 
                 if text_split[-1] == 'release' :
                     board_pos_after = f'{text_split[4]},{text_split[6]}'
