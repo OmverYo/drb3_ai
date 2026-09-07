@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 import os
 from rclpy.node import Node
+from std_srvs.srv import SetBool
 
 from ament_index_python.packages import get_package_share_directory
 from od_msg.srv import SrvDepthPosition
@@ -33,12 +34,20 @@ class ObjectDetectionNode(Node):
             'get_3d_position',
             self.handle_get_depth
         )
+
         self.board_api_url = os.getenv(
             'JANGGI_BOARD_API_URL', 'http://127.0.0.1:5000/api/board'
         )
         self.board_corners = self._load_board_corners()
         self.aruco = ArucoModel()
         sync_interval = float(os.getenv('JANGGI_SYNC_INTERVAL', '2.0'))
+        self.board_sync_enabled = False
+        self.board_sync_service = self.create_service(
+            SetBool,
+            'enable_board_sync',
+            self.handle_enable_board_sync
+        )
+        self.board_timer = self.create_timer(sync_interval, self._sync_board)
         self.create_timer(sync_interval, self._sync_board)
         self.get_logger().info("ObjectDetectionNode initialized.")
         self.get_logger().info(
@@ -226,7 +235,7 @@ class ObjectDetectionNode(Node):
             return 0.0, 0.0, 0.0
         
         self.get_logger().info(f"Detection: box={box}, score={score}")
-        cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2])
+        cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
         cz = self._get_depth(cx, cy)
         if cz is None:
             self.get_logger().warn("Depth out of range.")

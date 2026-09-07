@@ -78,19 +78,8 @@ class GetCommand(Node):
     def __init__(self):
         super().__init__("get_command_node")
 
-        # 윈도우 크기(초)와 슬라이딩 간격(프레임)을 파라미터로 노출 (기본 2초 / 1프레임)
-        # 카메라 프레임마다 모델이 라벨 하나(예: fist, open_palm, none)를 뱉는데, 그 라벨들을 최근 몇 초치 모아서 다수결을 낼지 정하는 값입니다.
-        # fps(초당 프레임 수)와 곱해서 실제 버퍼 길이(프레임 개수)로 환산됩니다.
-        # 예: window_seconds=2.0, fps=30 → 최근 60개 라벨을 보고 다수결.
-        # 크면: 순간적으로 손이 흔들리거나 오인식이 한두 프레임 섞여도 잘 안 흔들리고 안정적(노이즈에 강함).
-        # 대신 실제 제스처가 바뀌어도 반영되기까지 반응이 느려짐(지연 증가).
-        # 작으면: 반응은 빠르지만, 프레임 하나하나의 오인식에 그대로 흔들릴 수 있음.
         self.declare_parameter("window_seconds", 2)
-        # 주의: 이 값이 커도 추론 자체는 여전히 매 프레임마다 1번씩 일어납니다(성능 최적화 때문에 이렇게 만들었었죠).
-        # 이 값이 조절하는 건 "버퍼가 다 찬 뒤, 최종 결과값(self._latest_command)을 새로고침하는 빈도"입니다.
-        # 1(기본값): 새 프레임이 들어올 때마다 매번 다수결을 다시 계산 → 결과가 가장 촘촘하게(실시간으로) 갱신됨.
-        # 5: 5프레임(≈0.17초 @30fps)마다 한 번씩만 최종 결과를 갱신 → get_command 서비스가 반환하는 값이 그만큼 덜 자주 바뀜. (다수결 계산 자체는 Counter라 매우 가벼워서, 이 값을 늘리는 주된 이유는 "결과 값이 너무 자주 튀는 걸 원치 않을 때" 정도입니다.)
-        self.declare_parameter("slide_frames", 1) # 
+        self.declare_parameter("slide_frames", 1)
         # 카메라 화면을 띄울지 여부 (헤드리스 환경에서는 False로)
         self.declare_parameter("show_window", True)
 
@@ -182,7 +171,10 @@ class GetCommand(Node):
 
     def _on_frame(self, frame):
         """CamController 스트리밍 스레드에서 새 프레임마다 호출됨 (프레임당 추론 1회)."""
+        #start = time.perf_counter()
         self.sliding.process_frame(frame)
+        #delay = time.perf_counter() - start
+        #self.get_logger().info(f"추론 소요 시간 :{delay} ms")
         self._evaluate_vision_result()
 
     def _normalize_label(self, label):

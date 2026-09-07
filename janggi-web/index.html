@@ -43,18 +43,27 @@
     </section>
 
     <aside class="side">
+      <div class="tag action-panel">
+        <h3><span class="glyph">GAME</span></h3>
+        <div class="action-buttons">
+          <button type="button">게임 시작</button>
+          <button type="button">새로고침</button>
+          <button type="button">게임 종료</button>
+        </div>
+      </div>
+
       <div class="tag">
         <h3><span class="glyph">VOICE</span></h3>
         <p class="readout" id="voiceReadout">대기 중<span class="deg">&deg;</span></p>
         <p class="sub" id="voiceSub">STT 매칭 대기</p>
-        <div class="meter"><i id="voiceMeter" style="width:0%"></i></div>
+        <div class="meter sensor-meter"><i id="voiceMeter" style="width:0%"></i></div>
       </div>
 
       <div class="tag">
         <h3><span class="glyph">GESTURE</span></h3>
         <p class="readout" id="gestureReadout">대기 중<span class="deg">&deg;</span></p>
         <p class="sub" id="gestureSub">카메라 분석 대기</p>
-        <div class="meter"><i id="gestureMeter" style="width:0%"></i></div>
+        <div class="meter sensor-meter"><i id="gestureMeter" style="width:0%"></i></div>
       </div>
 
       <div class="tag">

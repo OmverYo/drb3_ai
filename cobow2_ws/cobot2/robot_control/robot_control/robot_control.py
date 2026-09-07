@@ -13,7 +13,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
 from od_msg.srv import SrvDepthPosition
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
@@ -24,10 +24,10 @@ package_path = get_package_share_directory("robot_control")
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 60, 60
-BUCKET_POS = [634.94, -8.82, 59.23]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
+BUCKET_POS = [200.58, -26.07, 56.57]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
 JHOME_POS = [0, -30, 90, 0, 90, 0]
 PLACE_LIFT = 150.0
-PLACE_X_OFFSET = 2.0
+PLACE_X_OFFSET = 0.0
 PLACE_Y_OFFSET = -8.0
 PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
@@ -86,6 +86,9 @@ class RobotController(Node):
         # MultiThreadedExecutor 하에서 서비스 응답 콜백/타이머 콜백이 서로 블로킹 없이
         # 동시에 처리될 수 있도록 재진입 가능한 콜백 그룹을 사용한다.
         self.cb_group = ReentrantCallbackGroup()
+        self.board_sync_client = self.create_client(
+            SetBool, "/set_board_sync", callback_group=self.cb_group
+        )
 
         self.gripper2cam_path = os.path.join(package_path,"resource","T_gripper2camera.npy")
 
@@ -98,6 +101,7 @@ class RobotController(Node):
 
         self.get_logger().info(f"RobotController mode = '{self.mode}'")
 
+        self.isBucket = False
         if self.mode == "voice":
             self._init_voice_services()
         else:
@@ -142,6 +146,7 @@ class RobotController(Node):
             self._request_vision_command,
             callback_group=self.cb_group,
         )
+        self.vision_timer.cancel()  # 폴링은 노드 생성 직후부터 시작되므로, 여기서는 타이머를 일단 멈춰둔다.
 
     def _publish_task(self, target, pos):
         data = {}
@@ -165,6 +170,24 @@ class RobotController(Node):
                 return False
             time.sleep(0.01)
         return future.done()
+
+    def set_board_sync(self, enable):
+        '''False 보내면 현황판 중단, True 보내면 현황판 재개'''
+        if not self.board_sync_client.wait_for_service(timeout_sec=5.0):
+            raise RuntimeError('/set_board_sync service not available')
+
+        request = SetBool.Request()
+        request.data = enable
+        future = self.board_sync_client.call_async(request)
+        if not self._wait_for_future(future, timeout_sec=15.0):
+            future.cancel()
+            raise RuntimeError('/set_board_sync service call timed out')
+
+        response = future.result()
+        if response is None or not response.success:
+            raise RuntimeError('현황판 상태 변경 실패')
+
+        self.get_logger().info(f"현황판 상태 변경: {'활성화' if enable else '비활성화'}")
 
     # ------------------------------------------------------------------
     # 비전 서비스(get_command) 폴링
@@ -204,6 +227,7 @@ class RobotController(Node):
                     board_pos_after = f'{text_split[4]},{text_split[6]}'
                     board_xyz_after = self.get_board_target_pos(board_pos_after)
                 elif text_split[-1] == 'bucket' :
+                    self.isBucket = True
                     board_xyz_after = BUCKET_POS
 
             else:
@@ -368,12 +392,16 @@ class RobotController(Node):
         return target_pos
 
     def init_robot(self):
+        
         JReady = [-13, 21, 43, 0, 115.5, -13]
         movej(JReady, vel=VELOCITY, acc=ACC)
         gripper.open_gripper()
         mwait()
 
+        self.set_board_sync(True)
+
     def pick_and_place_target(self, target_pos, board_xyz):
+        self.set_board_sync(False)
 
         lift_pos = target_pos[:2] + [target_pos[2] + PLACE_LIFT] + target_pos[3:]
         movel(lift_pos, vel=VELOCITY, acc=ACC)
@@ -390,7 +418,10 @@ class RobotController(Node):
         mwait()
 
         hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + target_pos[3:]
-        place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
+        if self.isBucket :
+            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + target_pos[3:]
+        else :
+            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
         self.get_logger().info(f"Janggi place position: {place_pos}")
 
         movel(hover_pos, vel=VELOCITY, acc=ACC)
@@ -413,12 +444,15 @@ class RobotController(Node):
 def main(args=None):
     node = RobotController()
 
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
 
     try:
+        node.init_robot()
+        if node.mode == "vision":
+            node.vision_timer.reset()  # 폴링 타이머 시작
         if node.mode == "voice":
             while rclpy.ok():
                 node.robot_control()

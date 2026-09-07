@@ -69,12 +69,23 @@ svg#board{ width:100%; height:auto; display:block; }
 }
 .tag .glyph{ font-weight:900; font-size:14px; }
 
+.action-buttons{ display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.action-buttons button{
+  appearance:none; border:1px solid var(--rule); border-radius:0; padding:10px 6px;
+  background:#d9dddb; color:var(--ink); font:700 11.5px "Noto Sans KR", sans-serif;
+  cursor:pointer; white-space:nowrap;
+}
+.action-buttons button:hover{ background:#cdd3d0; }
+.action-buttons button:active{ background:#c3cbc7; }
+.action-buttons button:focus-visible{ outline:2px solid var(--ink); outline-offset:2px; }
+
 .readout{ font-size:22px; font-weight:800; margin:0 0 6px 0; min-height:28px; letter-spacing:-0.01em; }
 .readout .deg{ font-size:14px; font-weight:700; }
 .sub{ font-size:12px; color:var(--ink-soft); opacity:1; margin:0 0 10px 0; font-weight:600; font-variant-numeric:tabular-nums; }
 
 .meter{ height:2px; background:#ececec; position:relative; }
 .meter i{ display:block; height:100%; background:var(--ink); transition:width 0.4s ease; }
+.sensor-meter{ display:none; }
 
 .status-line{ display:flex; align-items:center; gap:9px; margin-bottom:10px; }
 .status-line .stone{ width:7px; height:7px; background:var(--ink-faint); flex-shrink:0; }

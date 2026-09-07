@@ -13,6 +13,12 @@ const PIECE_MAP = {
 };
 
 const COLS = 9, ROWS = 10, GAP = 50, OX = 40, OY = 40;
+const START_MARKERS = [
+  { c: 1, r: 2 }, { c: 7, r: 2 },
+  { c: 0, r: 3 }, { c: 2, r: 3 }, { c: 4, r: 3 }, { c: 6, r: 3 }, { c: 8, r: 3 },
+  { c: 1, r: 7 }, { c: 7, r: 7 },
+  { c: 0, r: 6 }, { c: 2, r: 6 }, { c: 4, r: 6 }, { c: 6, r: 6 }, { c: 8, r: 6 }
+];
 const px = c => OX + c*GAP;
 const py = r => OY + r*GAP;
 
@@ -58,9 +64,28 @@ function octagonPath(cx, cy, r){
   return `M${pts.join(' L')} Z`;
 }
 
+function starPath(cx, cy, outerRadius, innerRadius){
+  const pts = [];
+  for(let i=0;i<10;i++){
+    const radius = i % 2 === 0 ? outerRadius : innerRadius;
+    const angle = -Math.PI / 2 + i * Math.PI / 5;
+    pts.push(`${cx + radius * Math.cos(angle)},${cy + radius * Math.sin(angle)}`);
+  }
+  return `M${pts.join(' L')} Z`;
+}
+
 function drawBoard(){
   const ink = '#0a0a0a';
   let parts = [];
+
+  parts.push(`<defs><clipPath id="boardBounds"><rect x="${OX}" y="${OY}" width="${(COLS - 1) * GAP}" height="${(ROWS - 1) * GAP}"/></clipPath></defs>`);
+
+  for(let c=0;c<COLS;c++){
+    parts.push(`<text x="${px(c)}" y="22" text-anchor="middle" font-size="10" font-family="Noto Sans KR, sans-serif" font-weight="700" fill="#6e6e6e">${c + 1}</text>`);
+  }
+  for(let r=0;r<ROWS;r++){
+    parts.push(`<text x="20" y="${py(r) + 3.5}" text-anchor="middle" font-size="10" font-family="Noto Sans KR, sans-serif" font-weight="700" fill="#6e6e6e">${r + 1}</text>`);
+  }
 
   for(let r=0;r<ROWS;r++){
     parts.push(`<line x1="${px(0)}" y1="${py(r)}" x2="${px(COLS-1)}" y2="${py(r)}" stroke="${ink}" stroke-width="1" opacity="0.85"/>`);
@@ -72,6 +97,10 @@ function drawBoard(){
   parts.push(`<line x1="${px(5)}" y1="${py(0)}" x2="${px(3)}" y2="${py(2)}" stroke="${ink}" stroke-width="1" opacity="0.85"/>`);
   parts.push(`<line x1="${px(3)}" y1="${py(7)}" x2="${px(5)}" y2="${py(9)}" stroke="${ink}" stroke-width="1" opacity="0.85"/>`);
   parts.push(`<line x1="${px(5)}" y1="${py(7)}" x2="${px(3)}" y2="${py(9)}" stroke="${ink}" stroke-width="1" opacity="0.85"/>`);
+
+  START_MARKERS.forEach(({c, r}) => {
+    parts.push(`<path d="${starPath(px(c), py(r), 5, 2.5)}" fill="${ink}" stroke="${ink}" stroke-width="0.5" clip-path="url(#boardBounds)"/>`);
+  });
 
   if (selected !== null && pieces[selected]) {
     const activeC = pieces[selected].c;
@@ -95,6 +124,11 @@ function drawBoard(){
     const textColor = isHan ? '#b23a2e' : '#2f5d55';
     parts.push(`<path d="${octagonPath(cx,cy,15)}" fill="#ffffff" stroke="${isSel ? textColor : ink}" stroke-width="${isSel?2.6:1.4}"/>`);
     parts.push(`<text class="piece-label" x="${cx}" y="${cy+5.5}" text-anchor="middle" font-size="15" fill="${textColor}">${p.t}</text>`);
+    if (isSel) {
+      const labelY = Math.max(15, cy - 32);
+      parts.push(`<rect x="${cx - 19}" y="${labelY - 14}" width="38" height="20" fill="#ece8c9" stroke="#6e6e6e" stroke-width="1"/>`);
+      parts.push(`<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="13" font-family="Noto Sans KR, sans-serif" font-weight="800" fill="${ink}">${p.r + 1}-${p.c + 1}</text>`);
+    }
   });
 
   svgEl.innerHTML = parts.join('');
