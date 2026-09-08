@@ -4,7 +4,6 @@ import sys
 import json
 import argparse
 import threading
-from robot_control.task_json import TaskJsonPublisher, coordinate, vision_command
 from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
@@ -13,12 +12,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
-from od_msg.srv import SrvDepthPosition
+from od_msg.srv import SrvDepthPosition, SrvAllPositions
 from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
 from robot_control.aruco_calculator import ArucoCalculator
+from robot_control.task_json import TaskJsonPublisher, coordinate
 
 package_path = get_package_share_directory("robot_control")
 
@@ -82,12 +82,13 @@ class RobotController(Node):
     def __init__(self, mode: str = MODE):
         super().__init__("pick_and_place")
         self.mode = mode
+        # [JSON 추가] 기존 task_json 노드가 Flask 전송을 담당한다.
+        self.task_json = TaskJsonPublisher(self)
         
 
         # MultiThreadedExecutor 하에서 서비스 응답 콜백/타이머 콜백이 서로 블로킹 없이
         # 동시에 처리될 수 있도록 재진입 가능한 콜백 그룹을 사용한다.
         self.cb_group = ReentrantCallbackGroup()
-        self.task_json = TaskJsonPublisher(self)
         self.board_sync_client = self.create_client(
             SetBool, "/set_board_sync", callback_group=self.cb_group
         )
@@ -108,6 +109,19 @@ class RobotController(Node):
             self._init_voice_services()
         else:
             self._init_vision_service()
+
+    def _record_task(self, action, **fields):
+        # [JSON 추가] 기록 오류 처리는 여기서만 하고 로봇 동작으로 전파하지 않는다.
+        try:
+            if action == 'start':
+                for key in ('before', 'after'):
+                    if isinstance(fields.get(key), str):
+                        fields[key] = coordinate(fields[key])
+                self.task_json.start(**fields)
+            else:
+                self.task_json.finish(status=action, **fields)
+        except Exception:
+            self.get_logger().warn('Task JSON 기록 실패')
 
     def _init_voice_services(self):
         """옵션 1(기본): get_keyword(음성) + get_position(depth) 서비스만 준비한다."""
@@ -136,6 +150,16 @@ class RobotController(Node):
         while not self.vision_client.wait_for_service(timeout_sec=3.0):
             self.get_logger().info("Waiting for get_command (vision) service...")
         self.vision_request = Trigger.Request()
+
+        # 아루코로 계산한 board_xyz_before(집는 위치)를 실제 detection 결과로
+        # 보정하기 위한 서비스. 클래스 무관, 전체 detection 후보 중
+        # 아루코 계산값과 가장 가까운 것을 robot_control 쪽에서 선택한다.
+        self.get_all_positions_client = self.create_client(
+            SrvAllPositions, "/get_all_positions", callback_group=self.cb_group
+        )
+        while not self.get_all_positions_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info("Waiting for get_all_positions service...")
+        self.get_all_positions_request = SrvAllPositions.Request()
 
         # 조건 3: 요청 전송~응답 처리(z축 bump 이동 포함) 동안 True.
         # 다음 요청은 이 플래그가 False로 돌아온 뒤에만 나간다.
@@ -210,40 +234,24 @@ class RobotController(Node):
         """조건 2: 응답 성공/실패, 인식된 커맨드 값에서 현재 위치와 이동할 위치값 추출하여 이동
         """
         self.get_logger().info(f"도커 반영 확인")
-        # [JSON 추가] 이번 호출에서 Task 기록을 시작했는지 확인
-        json_task_started = False
         try:
             result = future.result()
             if result is not None and result.success:
                 self.get_logger().info(f"vision command: {result.message}")
                 # result.message example: "1 , 3 grap 3 , 4 release"
                 text_split = result.message.split(' ')
-                board_pos_before = f'{text_split[0]},{text_split[2]}'
-                # [JSON 추가] 출발/도착 행·열을 JSON으로 기록
-                try:
-                    before = {"row": int(text_split[0]),"col": int(text_split[2]),}
 
-                    if text_split[-1] == 'release':
-                        after = {"row": int(text_split[4]),"col": int(text_split[6]),}
-                    elif text_split[-1] == 'bucket':
-                        after = None
-                    else:
-                        raise ValueError(f"Unknown vision command: {text_split[-1]}")
-                    self.task_json.start(before=before, after=after)
-                    json_task_started = True
-                except Exception as json_error:
-                    self.get_logger().error( f"JSON 시작 기록 실패: {json_error}")
+                board_pos_before = f'{text_split[0]},{text_split[2]}'
+                # [JSON 추가] vision 출발/도착 행·열 기록. bucket은 도착 좌표 없음.
+                self._record_task('start', before=board_pos_before,
+                    after=f'{text_split[4]},{text_split[6]}'
+                    if text_split[-1] == 'release' else None)
                 # 이때 get_board_target_pos 내부에서 계산시 z 값은 realsense depth 카메라로 부터 받아서 사용해야 하므로, 필수로 켜줘야 함.
                 #1행 1열 부터 시작하는 텍스트 '(row,colunm)' 형태로 받아서 좌표값 xyz 로 반환. 
                 board_xyz_before = self.get_board_target_pos(board_pos_before)
                 if board_xyz_before is None:
                     self.get_logger().warn(f"Invalid board target(before): {board_pos_before}")
-                    # [JSON 추가] 출발 좌표 계산 실패 기록
-                    if json_task_started:
-                        try:
-                            self.task_json.fail_safely( f"Invalid board target(before): {board_pos_before}")
-                        except Exception as json_error:
-                            self.get_logger().error(f"JSON 실패 기록 오류: {json_error}")
+                    self._record_task('failed', error=f'Board position unavailable: {board_pos_before}')
                     return
                 # realsense 값 그대로 사용이 안됨. aruco 계산 시 보정 필요.
                 # -> 아루코 추정 위치 근처에서 실제 detection 결과를 찾아 대체(클래스 무관, 최근접).
@@ -266,14 +274,7 @@ class RobotController(Node):
                 self.get_logger().info(f"vision service 응답 실패/대기중: {reason}")
         except Exception as e:
             self.get_logger().error(f"vision 서비스 응답 처리 실패: {e}")
-
-            # [JSON 추가] 명령 처리 실패 기록
-            if json_task_started:
-                try:
-                    self.task_json.fail_safely(str(e))
-                except Exception as json_error:
-                    self.get_logger().error(f"JSON 실패 기록 오류: {json_error}" )
-                json_task_started = False
+            self._record_task('failed', error=str(e))
 
         try:
             #이전 pos 는 쓰잘때기 없는? 회전 값까지 요구하므로, 이를 결국 제자리 값인 0'-180'-0' 로 회전하도록 == 회전 안하도록 줌.
@@ -281,27 +282,16 @@ class RobotController(Node):
             #after 값은 pick_and_place_target() 내부에서 before 처럼 변환 수행하므로 그대로 넣어줌.
             self.pick_and_place_target(board_xyzRyRzRy_before, board_xyz_after)
             self.init_robot()
-
-            # [JSON 추가] 이동 및 Home 복귀 정상 종료 기록
-            if json_task_started:
-                try:
-                    self.task_json.finish()
-                except Exception as json_error:
-                    self.get_logger().error( f"JSON 완료 기록 실패: {json_error}")
+            # [JSON 추가] 이동 및 초기 위치 복귀 결과 기록.
+            self._record_task('completed' if rclpy.ok() else 'failed')
         except Exception as e:
             self.get_logger().error(f"vision 이동 실패: {e}")
-
-            # [JSON 추가] 이동 실패 기록
-            if json_task_started:
-                try:
-                    self.task_json.fail_safely(str(e))
-                except Exception as json_error:
-                    self.get_logger().error(f"JSON 실패 기록 오류: {json_error}" )
-
+            self._record_task('failed', error=str(e))
         finally:
             # 이동이 끝난 뒤에야 다음 요청을 허용 (조건 3)
             with self._vision_lock:
                 self._vision_busy = False
+
 
     def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
         R = Rotation.from_euler("ZYZ", [rx, ry, rz], degrees=True).as_matrix()
@@ -371,9 +361,7 @@ class RobotController(Node):
         self.get_logger().info("call get_keyword service")
         self.get_logger().info("say 'Hello Rokey' and speak what you want to pick up")
         get_keyword_future = self.get_keyword_client.call_async(self.get_keyword_request)
-        if not self._wait_for_future(get_keyword_future, timeout_sec=60.0):
-            get_keyword_future.cancel()
-            return
+        self._wait_for_future(get_keyword_future, timeout_sec=60.0)
         if not rclpy.ok():
             return
         if get_keyword_future.result() is not None and get_keyword_future.result().success:
@@ -390,26 +378,24 @@ class RobotController(Node):
 
             for i, target in enumerate(tools):
                 dest = dests[i] if i < len(dests) else None
+                # [JSON 추가] voice 말 이름과 도착 행·열 기록.
+                self._record_task('start', piece=target, after=dest)
                 try:
-                    self.task_json.start(piece=target, after=coordinate(dest))
                     self._publish_task(target, dest)
-                    mwait()
                     board_xyz = self.get_board_target_pos(dest)
                     if board_xyz is None:
-                        raise RuntimeError(f'Board position unavailable: {dest}')
+                        self.get_logger().warn(f"Invalid board target: {dest}")
+                        self._record_task('failed', error=f'Board position unavailable: {dest}')
+                        continue
                     target_pos = self.get_target_pos(target)
                     if target_pos is None:
-                        raise RuntimeError(f'Piece not detected: {target}')
+                        self._record_task('failed', error=f'Piece not detected: {target}')
+                        continue
                     self.pick_and_place_target(target_pos, board_xyz)
-                    if not rclpy.ok():
-                        raise RuntimeError('ROS stopped; physical result unknown')
                     self.init_robot()
-                    if not rclpy.ok():
-                        raise RuntimeError('ROS stopped during home')
-                    self.task_json.finish()
-                except Exception as error:
-                    self.task_json.fail_safely(error)
-                    self._publish_task(None, None)
+                    self._record_task('completed' if rclpy.ok() else 'failed')
+                except Exception as e:
+                    self._record_task('failed', error=str(e))
                     raise
 
             self._publish_task(None, None)
@@ -457,6 +443,55 @@ class RobotController(Node):
             target_pos = list(td_coord[:3]) + robot_posx[3:]
         return target_pos
 
+    def refine_board_pos_with_detection(self, reference_xyz, max_dist=None):
+        """아루코 기반 board_xyz(reference_xyz, BASE 프레임)와 가장 가까운
+        실제 detection 결과를 찾아 BASE 프레임 좌표로 반환한다.
+        클래스 무관, 화면에 보이는 모든 detection 후보 중 최근접을 사용한다.
+        적절한 후보가 없거나 서비스 응답이 없으면 reference_xyz(아루코 계산값)를 그대로 반환한다.
+
+        max_dist: None이 아니면, 최근접 후보와의 거리가 이 값(mm)을 넘을 때
+                  오검출로 간주하고 아루코 계산값을 그대로 사용한다.
+        """
+        if reference_xyz is None:
+            return None
+
+        self.get_all_positions_request.min_score = 0.0
+        future = self.get_all_positions_client.call_async(self.get_all_positions_request)
+        self._wait_for_future(future, timeout_sec=5.0)
+        if not rclpy.ok():
+            return reference_xyz
+
+        result = future.result()
+        if result is None or len(result.x) == 0:
+            self.get_logger().warn("get_all_positions: 후보 없음. 아루코 계산값 사용.")
+            return reference_xyz
+
+        robot_posx = get_current_posx()[0]
+        ref = np.array(reference_xyz[:3], dtype=float)
+
+        best_base_xyz = None
+        best_dist = None
+        for cam_x, cam_y, cam_z, score in zip(result.x, result.y, result.z, result.score):
+            base_xyz = self.transform_to_base(
+                [cam_x, cam_y, cam_z], self.gripper2cam_path, robot_posx
+            )
+            dist = float(np.linalg.norm(base_xyz - ref))
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_base_xyz = base_xyz
+
+        if best_base_xyz is None or (max_dist is not None and best_dist > max_dist):
+            self.get_logger().warn(
+                f"get_all_positions: 유효 후보 없음(best_dist={best_dist}). 아루코 계산값 사용."
+            )
+            return reference_xyz
+
+        self.get_logger().info(
+            f"board_xyz_before 보정: 아루코={list(ref)} -> detection={list(best_base_xyz)} "
+            f"(dist={best_dist:.2f}mm)"
+        )
+        return list(best_base_xyz)
+
     def init_robot(self):
         
         JReady = [-13, 21, 43, 0, 115.5, -13]
@@ -486,6 +521,7 @@ class RobotController(Node):
         hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + target_pos[3:]
         if self.isBucket :
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + target_pos[3:]
+            self.isBucket = False
         else :
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
         self.get_logger().info(f"Janggi place position: {place_pos}")
@@ -528,9 +564,11 @@ def main(args=None):
             while rclpy.ok():
                 time.sleep(0.5)
     except KeyboardInterrupt:
-        node.task_json.fail_safely('Interrupted; physical result unverified')
+        pass
     finally:
         executor.shutdown()
+        # [JSON 추가] 종료 시 진행 중인 Task가 있으면 미완료로 기록한다.
+        node._record_task('failed', error='Robot control stopped before completion')
         node.destroy_node()
         rclpy.shutdown()
         executor_thread.join(timeout=1.0)

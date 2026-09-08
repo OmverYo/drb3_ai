@@ -110,5 +110,63 @@ def test_move():
     
     return jsonify({'message': '테스트 이동 성공', 'lastMove': last_move_text})
 
+# [Task JSON 추가] robot_control의 JSON을 events 컬렉션에 기록한다.
+# task_id를 MongoDB 기본 고유키로 사용해 Task당 문서 하나만 저장한다.
+from pymongo.errors import PyMongoError
+import hmac
+
+events_col = db.events
+
+
+@app.route('/api/events', methods=['POST'])
+def receive_task_event():
+    token = os.getenv('JANGGI_API_TOKEN', '')
+    if token and not hmac.compare_digest(
+            request.headers.get('Authorization', ''), 'Bearer ' + token):
+        return jsonify(ok=False, error='Unauthorized'), 401
+    data = request.get_json(silent=True)
+    # 저장에 필요한 필수 항목만 확인한다.
+    if not isinstance(data, dict):
+        return jsonify(ok=False), 400
+    kind = data.get('kind')
+    key = data.get('task_id') if kind == 'task' else data.get('robot_id')
+    if (kind not in ('task', 'mode') or not isinstance(key, str) or not key
+            or not all(data.get(name) for name in ('event_id', 'occurred_at', 'mode'))):
+        return jsonify(ok=False), 400
+    try:
+        if kind == 'mode':
+            # 모드는 로봇당 문서 하나로 관리한다. 오래된 재전송은 무시한다.
+            states = db.robot_states
+            states.update_one({'_id': key}, {'$setOnInsert': {'robot_id': key}}, upsert=True)
+            states.update_one(
+                {'_id': key, '$or': [{'updated_at': {'$exists': False}},
+                                   {'updated_at': {'$lt': data['occurred_at']}}]},
+                {'$set': {'mode': data['mode'], 'updated_at': data['occurred_at']}})
+        else:
+            # Task당 하나만 생성하고, 완료/실패가 오면 같은 문서를 갱신한다.
+            task = {name: data.get(name) for name in
+                    ('mode', 'piece', 'before', 'after')}
+            task.update(status='started', error=None)
+            events_col.update_one({'_id': key}, {'$setOnInsert': task}, upsert=True)
+            if data['status'] == 'started':
+                events_col.update_one(
+                    {'_id': key, 'started_at': {'$exists': False}},
+                    {'$set': {'started_at': data['occurred_at']}})
+            else:
+                # 재전송이나 늦게 도착한 started가 완료 상태를 되돌리지 않는다.
+                events_col.update_one({'_id': key, 'status': 'started'}, {'$set': {
+                    'status': data['status'], 'error': data.get('error'),
+                    'finished_at': data['occurred_at']}})
+    except PyMongoError:
+        return jsonify(ok=False), 503
+    # 웹 클라이언트는 task_event 이벤트를 구독해 기록/모드를 표시할 수 있다.
+    # 기존 board_updated 및 장기판 갱신 동작은 그대로 유지한다.
+    try:
+        socketio.emit('task_event', data)
+    except Exception:
+        pass  # DB 저장은 완료됐으므로 웹 알림 실패로 재전송하지 않는다.
+    return jsonify(ok=True, event_id=data['event_id'])
+
+
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)
