@@ -25,7 +25,8 @@ const py = r => OY + r*GAP;
 let pieces = [];
 let selected = null;
 let hoverTarget = null; 
-let previousBoard = null;
+const seenTaskEvents = new Set();
+let boardEventVersion = 0;
 
 const svgEl = document.getElementById('board');
 svgEl.addEventListener('mousemove', (e) => {
@@ -168,21 +169,21 @@ function pushLog(text) {
   const strip = document.getElementById('logStrip');
   const el = document.createElement('span');
   el.className = 'entry';
-  el.innerHTML = text;
+  el.textContent = text;
   strip.appendChild(el);
   strip.scrollLeft = strip.scrollWidth;
 }
 
 // ARM UI 업데이트 헬퍼 함수
-function updateArmStatus(moveText) {
+function updateArmStatus(moveText, status = 'completed') {
     const badge = document.getElementById('armBadge');
     const target = document.getElementById('armTarget');
     const statusLine = document.getElementById('armStatusLine');
 
     if (moveText) {
-        // 1. 상태를 항상 활성화(ACTIVE)로 유지
-        badge.textContent = 'ACTIVE';
-        statusLine.className = 'status-line moving';
+        // 1. Task 상태 표시
+        badge.textContent = status === 'started' ? 'ACTIVE' : status === 'failed' ? 'FAILED' : 'IDLE';
+        statusLine.className = status === 'started' ? 'status-line moving' : 'status-line';
         
         // 2. 처음 표시된 기본 텍스트("현재 동작 없음") 지우기 및 스크롤 설정
         if (target.textContent === '현재 동작 없음') {
@@ -196,7 +197,7 @@ function updateArmStatus(moveText) {
         moveEntry.style.paddingBottom = '6px';
         moveEntry.style.marginBottom = '6px';
         moveEntry.style.borderBottom = '1px dashed rgba(110, 110, 110, 0.3)'; // 구분선 추가
-        moveEntry.innerHTML = `<b>${moveText}</b>`;
+        moveEntry.textContent = moveText;
         
         // 4. 새로운 기록을 가장 위쪽(첫 번째 자식)으로 추가
         target.insertBefore(moveEntry, target.firstChild);
@@ -216,69 +217,81 @@ function parseBoardData(board2D) {
     return newPieces;
 }
 
-function getBoardMove(previous, current) {
-    if (!previous) return null;
-
-    const previousPositions = new Map();
-    const currentPositions = new Map();
-
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const previousPiece = previous[r][c];
-            const currentPiece = current[r][c];
-
-            if (previousPiece) {
-                if (!previousPositions.has(previousPiece)) previousPositions.set(previousPiece, []);
-                previousPositions.get(previousPiece).push({ r, c });
-            }
-            if (currentPiece) {
-                if (!currentPositions.has(currentPiece)) currentPositions.set(currentPiece, []);
-                currentPositions.get(currentPiece).push({ r, c });
-            }
-        }
-    }
-
-    for (const [pieceKey, oldPositions] of previousPositions) {
-        const newPositions = currentPositions.get(pieceKey) || [];
-        const oldPosition = oldPositions.find(old => !newPositions.some(next => next.r === old.r && next.c === old.c));
-        const newPosition = newPositions.find(next => !oldPositions.some(old => old.r === next.r && old.c === next.c));
-
-        if (oldPosition && newPosition && PIECE_MAP[pieceKey]) {
-            const piece = PIECE_MAP[pieceKey];
-            const side = piece.team === 'han' ? '한나라' : '초나라';
-            return `${side} ${piece.t}을 ${oldPosition.r + 1}-${oldPosition.c + 1}에서 ${newPosition.r + 1}-${newPosition.c + 1}로 옮김`;
-        }
-    }
-
-    return null;
-}
-
-function applyBoardUpdate(board2D, currentTurn) {
-    const moveText = getBoardMove(previousBoard, board2D);
-    previousBoard = board2D.map(row => [...row]);
-    pieces = parseBoardData(board2D);
+// 장기판은 서버 상태를 렌더링하고, 동작 기록은 Task API 내용으로 표시한다.
+function applyBoardUpdate(data) {
+    const board = data && data.board;
+    if (!Array.isArray(board) || board.length !== ROWS ||
+        !board.every(row => Array.isArray(row) && row.length === COLS)) return;
+    selected = null;
+    pieces = parseBoardData(board);
     drawBoard();
-    setTurn(currentTurn || 'red');
-
-    if (moveText) {
-        updateArmStatus(moveText);
-        const time = new Date().toLocaleTimeString();
-        pushLog(`<b>${time}</b> ${moveText}`);
-    }
+    setTurn(data.currentTurn || 'red');
 }
 
-// 웹소켓 이벤트 수신
-socket.on('board_updated', function(data) {
-    applyBoardUpdate(data.board, data.currentTurn);
+function positionText(value) {
+    if (value && value.type === 'bucket') return '버리는 곳';
+    if (!value || typeof value !== 'object') return '위치 미확인';
+    if (Number.isInteger(value.row) && Number.isInteger(value.col)) {
+        return `${value.col}열 ${value.row}행`;
+    }
+    if (Number.isInteger(value.r) && Number.isInteger(value.c)) {
+        return `${value.c + 1}열 ${value.r + 1}행`;
+    }
+    return '위치 미확인';
+}
+
+socket.on('task_event', function(data) {
+    if (!data || !['task', 'mode'].includes(data.kind)) return;
+    const identity = data.task_id || data.event_id;
+    const eventKey = JSON.stringify([identity, data.status]);
+    if (seenTaskEvents.has(eventKey)) return;
+    seenTaskEvents.add(eventKey);
+    if (seenTaskEvents.size > 1000) seenTaskEvents.delete(seenTaskEvents.values().next().value);
+    const mode = {voice: '음성', vision: '비전', gesture: '제스처'}[data.mode] || data.mode || '미지정';
+    const time = new Date().toLocaleTimeString();
+    if (data.kind === 'mode') {
+        pushLog(`${time} 모드 변경: ${mode}`);
+        return;
+    }
+    // started는 상태만 표시하고 완료/실패 기록을 한 줄씩 남긴다.
+    if (data.status === 'started') {
+        document.getElementById('armBadge').textContent = 'ACTIVE';
+        document.getElementById('armStatusLine').className = 'status-line moving';
+        return;
+    }
+    const names = {cha: '차', ma: '마', sang: '상', sa: '사', wang: '왕', po: '포', jol: '졸'};
+    const rawPiece = typeof data.piece === 'string' ? data.piece : '';
+    const [pieceKey, encodedPosition] = rawPiece.split('@');
+    const piece = PIECE_MAP[pieceKey];
+    const pieceName = piece ? `${piece.team === 'han' ? '한' : '초'} ${names[pieceKey.split('_')[0]]}` : '말(종류 미확인)';
+    let before = data.before;
+    if (!before && /^\d+,\d+$/.test(encodedPosition || '')) {
+        const [row, col] = encodedPosition.split(',').map(Number);
+        before = {row, col};
+    }
+    const isBucket = data.after === null || (data.after && data.after.type === 'bucket');
+    const action = isBucket ? '버림' : '이동';
+    const destination = isBucket ? '버리는 곳' : positionText(data.after);
+    const result = data.status === 'failed' ? `${action} 실패` : action;
+    const text = `${pieceName}: ${positionText(before)} → ${destination} · ${result}`;
+    updateArmStatus(text, data.status);
+    pushLog(`${time} ${text}`);
 });
 
-// 초기 구동 시 데모 보드 불러오기
+socket.on('board_updated', function(data) {
+    boardEventVersion += 1;
+    applyBoardUpdate(data);
+});
+
+// 재연결 시에도 DB의 최신 장기판 복원. 조회 도중 도착한 실시간 갱신은 유지한다.
 async function loadBoard() {
+    const version = boardEventVersion;
     try {
-        const res = await fetch(`${API_BASE}/api/board`);
+        const res = await fetch(`${API_BASE}/api/board`, {cache: 'no-store'});
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data && data.board) {
-            applyBoardUpdate(data.board, data.currentTurn);
+        if (version === boardEventVersion && data && data.board) {
+            applyBoardUpdate(data);
             pushLog('최신 장기판을 불러왔습니다.');
         }
     } catch (e) {
@@ -286,4 +299,5 @@ async function loadBoard() {
     }
 }
 
-loadBoard();
+socket.on('connect', loadBoard);
+if (socket.connected) loadBoard();
