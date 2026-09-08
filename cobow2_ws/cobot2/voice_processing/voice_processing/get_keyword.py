@@ -47,10 +47,13 @@ class GetKeyword(Node):
             - 문장에 등장하는 도구의 목적지(어디로 옮기라고 했는지)도 함께 추출하세요.
 
             <도구 리스트>
-            - 장기말:
+                        - 장기말:
               cha_green, cha_red, jol_green, jol_red, ma_green, ma_red,
               po_green, po_red, sa_green, sa_red, sang_green, sang_red,
               wang_green, wang_red
+                        - 말 앞에 출발 위치가 명시되면 도구를 `도구@행,열`로 출력하세요.
+                            예: 4행 7열에 있는 초록색 쫄 -> jol_green@4,7
+                        - 출발 위치가 없으면 도구명만 출력하세요.
             - 목적지 좌표(행, 열):
               - 행(Row): 1 ~ 10 (총 10행)
               - 열(Col): 1 ~ 9 (총 9열)
@@ -65,6 +68,8 @@ class GetKeyword(Node):
               출력: cha_red / 1,1
             - 입력: "초록색 쫄을 5행 4열로 옮겨"  
               출력: jol_green / 5,4
+                        - 입력: "4행 7열에 있는 초록색 쫄을 5행 4열로 옮겨"  
+                            출력: jol_green@4,7 / 5,4
 
             <사용자 입력>
             "{user_input}"                

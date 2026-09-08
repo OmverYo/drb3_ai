@@ -285,9 +285,13 @@ class ObjectDetectionNode(Node):
         return response
 
     def _compute_position(self, target):
+        target_name, board_cell = self._parse_target_selector(target)
+        if board_cell is not None:
+            return self._compute_board_position(target_name, board_cell)
+
         self.img_node.spin_once()
 
-        box, score = self.model.get_best_detection(self.img_node, target)
+        box, score = self.model.get_best_detection(self.img_node, target_name)
         if box is None or score is None:
             self.get_logger().warn("No detection found.")
             return 0.0, 0.0, 0.0
@@ -299,6 +303,81 @@ class ObjectDetectionNode(Node):
             self.get_logger().warn("Depth out of range.")
             return 0.0, 0.0, 0.0
 
+        return self._pixel_to_camera_coords(cx, cy, cz)
+
+    def _parse_target_selector(self, target):
+        """Parse ``class`` or ``class@row,col``/``class@row-col`` selectors."""
+        target = str(target).strip()
+        if '@' not in target:
+            return target, None
+
+        target_name, cell_text = target.rsplit('@', 1)
+        parts = cell_text.replace('-', ',').split(',')
+        if len(parts) != 2:
+            self.get_logger().warn(
+                f"Invalid target selector '{target}'. Use class@row,col."
+            )
+            return target_name.strip(), None
+        try:
+            row, col = (int(part.strip()) for part in parts)
+        except ValueError:
+            self.get_logger().warn(
+                f"Invalid target selector '{target}'. Use class@row,col."
+            )
+            return target_name.strip(), None
+        if not (1 <= row <= GRID_ROWS and 1 <= col <= GRID_COLS):
+            self.get_logger().warn(
+                f"Target board cell out of range: row={row}, col={col}."
+            )
+            return target_name.strip(), None
+        return target_name.strip(), (row - 1, col - 1)
+
+    def _compute_board_position(self, target_name, board_cell):
+        """Select a class instance by its board cell from one camera snapshot."""
+        self.img_node.spin_once()
+        frame = self.img_node.get_color_frame()
+        if frame is None:
+            self.get_logger().warn("No color frame for board-positioned target.")
+            return 0.0, 0.0, 0.0
+
+        frame = frame.copy()
+        aruco_corners = self._detect_aruco_corners(frame)
+        if aruco_corners is not None:
+            homography = self._board_homography(aruco_corners, from_aruco=True)
+        elif self.board_corners is not None:
+            homography = self._board_homography(self.board_corners, from_aruco=False)
+        else:
+            homography = None
+        if homography is None:
+            self.get_logger().warn(
+                "Cannot select a board-positioned target without board references."
+            )
+            return 0.0, 0.0, 0.0
+
+        detections = self.model.get_board_detections(frame)
+        matches = [
+            detection for detection in detections
+            if detection['name'] == target_name
+            and self._pixel_to_board_cell(detection['box'], homography) == board_cell
+        ]
+        if not matches:
+            self.get_logger().warn(
+                f"No '{target_name}' detection found at board cell "
+                f"({board_cell[0] + 1},{board_cell[1] + 1})."
+            )
+            return 0.0, 0.0, 0.0
+
+        detection = max(matches, key=lambda item: item['score'])
+        box = detection['box']
+        cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
+        cz = self._get_depth(cx, cy)
+        if cz is None:
+            self.get_logger().warn("Depth out of range.")
+            return 0.0, 0.0, 0.0
+        self.get_logger().info(
+            f"Selected {target_name} at board cell "
+            f"({board_cell[0] + 1},{board_cell[1] + 1}), score={detection['score']:.3f}"
+        )
         return self._pixel_to_camera_coords(cx, cy, cz)
 
     def _get_depth(self, x, y, win=5):
