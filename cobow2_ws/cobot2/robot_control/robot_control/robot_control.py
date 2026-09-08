@@ -12,7 +12,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
-from od_msg.srv import SrvDepthPosition
+from od_msg.srv import SrvDepthPosition, SrvAllPositions
 from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
@@ -135,6 +135,16 @@ class RobotController(Node):
             self.get_logger().info("Waiting for get_command (vision) service...")
         self.vision_request = Trigger.Request()
 
+        # 아루코로 계산한 board_xyz_before(집는 위치)를 실제 detection 결과로
+        # 보정하기 위한 서비스. 클래스 무관, 전체 detection 후보 중
+        # 아루코 계산값과 가장 가까운 것을 robot_control 쪽에서 선택한다.
+        self.get_all_positions_client = self.create_client(
+            SrvAllPositions, "/get_all_positions", callback_group=self.cb_group
+        )
+        while not self.get_all_positions_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info("Waiting for get_all_positions service...")
+        self.get_all_positions_request = SrvAllPositions.Request()
+
         # 조건 3: 요청 전송~응답 처리(z축 bump 이동 포함) 동안 True.
         # 다음 요청은 이 플래그가 False로 돌아온 뒤에만 나간다.
         self._vision_busy = False
@@ -207,6 +217,7 @@ class RobotController(Node):
     def _on_vision_response(self, future):
         """조건 2: 응답 성공/실패, 인식된 커맨드 값에서 현재 위치와 이동할 위치값 추출하여 이동
         """
+        self.get_logger().info(f"도커 반영 확인")
         try:
             result = future.result()
             if result is not None and result.success:
@@ -218,9 +229,16 @@ class RobotController(Node):
                 # 이때 get_board_target_pos 내부에서 계산시 z 값은 realsense depth 카메라로 부터 받아서 사용해야 하므로, 필수로 켜줘야 함.
                 #1행 1열 부터 시작하는 텍스트 '(row,colunm)' 형태로 받아서 좌표값 xyz 로 반환. 
                 board_xyz_before = self.get_board_target_pos(board_pos_before)
+                if board_xyz_before is None:
+                    self.get_logger().warn(f"Invalid board target(before): {board_pos_before}")
+                    return
                 # realsense 값 그대로 사용이 안됨. aruco 계산 시 보정 필요.
-                board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
-                board_xyz_before[1] = board_xyz_before[1] + PLACE_Y_OFFSET
+                # -> 아루코 추정 위치 근처에서 실제 detection 결과를 찾아 대체(클래스 무관, 최근접).
+                board_xyz_before = self.refine_board_pos_with_detection(board_xyz_before)
+                #board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
+                #board_xyz_before[1] = board_xyz_before[1] + PLACE_Y_OFFSET
+                #default code 인 get_target_pos 조차, z 값은 후보정을 함 "DEPTH_OFFSET" 이용.
+                #따라서 그냥 후보정을 DEPTH_OFFSET 로 안하고 상수로 치환.
                 board_xyz_before[2] = 3
                 # after 위치는 판 내부 or 버킷(딴 상대방 말) 
                 if text_split[-1] == 'release' :
@@ -391,6 +409,55 @@ class RobotController(Node):
             target_pos = list(td_coord[:3]) + robot_posx[3:]
         return target_pos
 
+    def refine_board_pos_with_detection(self, reference_xyz, max_dist=None):
+        """아루코 기반 board_xyz(reference_xyz, BASE 프레임)와 가장 가까운
+        실제 detection 결과를 찾아 BASE 프레임 좌표로 반환한다.
+        클래스 무관, 화면에 보이는 모든 detection 후보 중 최근접을 사용한다.
+        적절한 후보가 없거나 서비스 응답이 없으면 reference_xyz(아루코 계산값)를 그대로 반환한다.
+
+        max_dist: None이 아니면, 최근접 후보와의 거리가 이 값(mm)을 넘을 때
+                  오검출로 간주하고 아루코 계산값을 그대로 사용한다.
+        """
+        if reference_xyz is None:
+            return None
+
+        self.get_all_positions_request.min_score = 0.0
+        future = self.get_all_positions_client.call_async(self.get_all_positions_request)
+        self._wait_for_future(future, timeout_sec=5.0)
+        if not rclpy.ok():
+            return reference_xyz
+
+        result = future.result()
+        if result is None or len(result.x) == 0:
+            self.get_logger().warn("get_all_positions: 후보 없음. 아루코 계산값 사용.")
+            return reference_xyz
+
+        robot_posx = get_current_posx()[0]
+        ref = np.array(reference_xyz[:3], dtype=float)
+
+        best_base_xyz = None
+        best_dist = None
+        for cam_x, cam_y, cam_z, score in zip(result.x, result.y, result.z, result.score):
+            base_xyz = self.transform_to_base(
+                [cam_x, cam_y, cam_z], self.gripper2cam_path, robot_posx
+            )
+            dist = float(np.linalg.norm(base_xyz - ref))
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_base_xyz = base_xyz
+
+        if best_base_xyz is None or (max_dist is not None and best_dist > max_dist):
+            self.get_logger().warn(
+                f"get_all_positions: 유효 후보 없음(best_dist={best_dist}). 아루코 계산값 사용."
+            )
+            return reference_xyz
+
+        self.get_logger().info(
+            f"board_xyz_before 보정: 아루코={list(ref)} -> detection={list(best_base_xyz)} "
+            f"(dist={best_dist:.2f}mm)"
+        )
+        return list(best_base_xyz)
+
     def init_robot(self):
         
         JReady = [-13, 21, 43, 0, 115.5, -13]
@@ -420,6 +487,7 @@ class RobotController(Node):
         hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + target_pos[3:]
         if self.isBucket :
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + target_pos[3:]
+            self.isBucket = False
         else :
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
         self.get_logger().info(f"Janggi place position: {place_pos}")

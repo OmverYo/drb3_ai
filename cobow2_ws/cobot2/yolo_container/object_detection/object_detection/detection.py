@@ -8,7 +8,7 @@ from rclpy.node import Node
 from std_srvs.srv import SetBool
 
 from ament_index_python.packages import get_package_share_directory
-from od_msg.srv import SrvDepthPosition
+from od_msg.srv import SrvDepthPosition, SrvAllPositions
 from object_detection.realsense import ImgNode
 from object_detection.yolo import YoloModel
 from object_detection.aruco import (
@@ -33,6 +33,15 @@ class ObjectDetectionNode(Node):
             SrvDepthPosition,
             'get_3d_position',
             self.handle_get_depth
+        )
+        # vision 모드에서 아루코 계산 위치(board_xyz_before)를 보정하기 위한 서비스.
+        # keyword(클래스) 매칭이 아니라, 화면에 보이는 모든 detection 후보를
+        # 카메라 프레임 좌표로 반환한다. "어느 후보가 가장 가까운가"는
+        # 로봇 베이스 프레임/현재 로봇 자세를 알고 있는 robot_control 쪽에서 판단한다.
+        self.create_service(
+            SrvAllPositions,
+            'get_all_positions',
+            self.handle_get_all_positions
         )
 
         self.board_api_url = os.getenv(
@@ -232,6 +241,42 @@ class ObjectDetectionNode(Node):
                     )
         except (urllib.error.URLError, TimeoutError) as error:
             self.get_logger().warn(f"Could not update board API: {error}")
+
+    def handle_get_all_positions(self, request, response):
+        self.get_logger().info(
+            f"Received get_all_positions request (min_score={request.min_score})"
+        )
+        xs, ys, zs, scores = self._compute_all_positions(min_score=request.min_score)
+        response.x = xs
+        response.y = ys
+        response.z = zs
+        response.score = scores
+        return response
+
+    def _compute_all_positions(self, min_score=0.0):
+        # get_all_detections()가 이미 img_node.spin_once()/프레임 수집을 내부에서 처리한다.
+        detections = self.model.get_all_detections(self.img_node)
+
+        xs, ys, zs, scores = [], [], [], []
+        for det in detections:
+            score = det["score"]
+            if score < min_score:
+                continue
+            box = det["box"]
+            cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
+            cz = self._get_depth(cx, cy)
+            if cz is None:
+                continue
+            x, y, z = self._pixel_to_camera_coords(cx, cy, cz)
+            xs.append(x)
+            ys.append(y)
+            zs.append(z)
+            scores.append(float(score))
+
+        if not xs:
+            self.get_logger().warn("No detections found for get_all_positions.")
+
+        return xs, ys, zs, scores
 
     def handle_get_depth(self, request, response):
         self.get_logger().info(f"Received request: {request}")

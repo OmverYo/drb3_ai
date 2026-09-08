@@ -1,0 +1,12 @@
+# Request
+# 이 점수 미만인 detection은 결과에서 제외한다. 0이면 전체 포함.
+float64 min_score
+---
+# Response
+# 카메라 프레임 3D 좌표 (아직 베이스 프레임으로 변환되지 않음).
+# 인덱스 i의 x[i], y[i], z[i], score[i]가 같은 detection 하나를 의미한다(병렬 배열).
+# detection이 하나도 없으면 모두 빈 배열.
+float64[] x
+float64[] y
+float64[] z
+float64[] score

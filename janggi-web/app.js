@@ -25,6 +25,7 @@ const py = r => OY + r*GAP;
 let pieces = [];
 let selected = null;
 let hoverTarget = null; 
+let previousBoard = null;
 
 const svgEl = document.getElementById('board');
 svgEl.addEventListener('mousemove', (e) => {
@@ -215,19 +216,60 @@ function parseBoardData(board2D) {
     return newPieces;
 }
 
+function getBoardMove(previous, current) {
+    if (!previous) return null;
+
+    const previousPositions = new Map();
+    const currentPositions = new Map();
+
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const previousPiece = previous[r][c];
+            const currentPiece = current[r][c];
+
+            if (previousPiece) {
+                if (!previousPositions.has(previousPiece)) previousPositions.set(previousPiece, []);
+                previousPositions.get(previousPiece).push({ r, c });
+            }
+            if (currentPiece) {
+                if (!currentPositions.has(currentPiece)) currentPositions.set(currentPiece, []);
+                currentPositions.get(currentPiece).push({ r, c });
+            }
+        }
+    }
+
+    for (const [pieceKey, oldPositions] of previousPositions) {
+        const newPositions = currentPositions.get(pieceKey) || [];
+        const oldPosition = oldPositions.find(old => !newPositions.some(next => next.r === old.r && next.c === old.c));
+        const newPosition = newPositions.find(next => !oldPositions.some(old => old.r === next.r && old.c === next.c));
+
+        if (oldPosition && newPosition && PIECE_MAP[pieceKey]) {
+            const piece = PIECE_MAP[pieceKey];
+            const side = piece.team === 'han' ? '한나라' : '초나라';
+            return `${side} ${piece.t}을 ${oldPosition.r + 1}-${oldPosition.c + 1}에서 ${newPosition.r + 1}-${newPosition.c + 1}로 옮김`;
+        }
+    }
+
+    return null;
+}
+
+function applyBoardUpdate(board2D, currentTurn) {
+    const moveText = getBoardMove(previousBoard, board2D);
+    previousBoard = board2D.map(row => [...row]);
+    pieces = parseBoardData(board2D);
+    drawBoard();
+    setTurn(currentTurn || 'red');
+
+    if (moveText) {
+        updateArmStatus(moveText);
+        const time = new Date().toLocaleTimeString();
+        pushLog(`<b>${time}</b> ${moveText}`);
+    }
+}
+
 // 웹소켓 이벤트 수신
 socket.on('board_updated', function(data) {
-    pieces = parseBoardData(data.board);
-    drawBoard();
-    
-    setTurn(data.currentTurn || 'red');
-    
-    // DB에서 넘어온 lastMove 값이 있으면 ARM 상태 패널과 하단 로그에 표기
-    if (data.lastMove) {
-        updateArmStatus(data.lastMove);
-        const time = new Date().toLocaleTimeString();
-        pushLog(`<b>${time}</b> ${data.lastMove}`);
-    }
+    applyBoardUpdate(data.board, data.currentTurn);
 });
 
 // 초기 구동 시 데모 보드 불러오기
@@ -236,16 +278,8 @@ async function loadBoard() {
         const res = await fetch(`${API_BASE}/api/board`);
         const data = await res.json();
         if (data && data.board) {
-            pieces = parseBoardData(data.board);
-            drawBoard();
-            setTurn(data.currentTurn || 'red');
-            
-            if (data.lastMove) {
-                updateArmStatus(data.lastMove);
-                pushLog(`최근 기록: ${data.lastMove}`);
-            } else {
-                pushLog('최신 데모 장기판을 불러왔습니다.');
-            }
+            applyBoardUpdate(data.board, data.currentTurn);
+            pushLog('최신 장기판을 불러왔습니다.');
         }
     } catch (e) {
         console.error('보드 로드 실패:', e);
