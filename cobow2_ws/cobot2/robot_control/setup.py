@@ -13,6 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'resource'), glob('resource/*')),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,7 +29,8 @@ setup(
     entry_points={
         'console_scripts': [
             'robot_control = robot_control.robot_control:main',
-            'aruco = robot_control.aruco_final_test:main'
+            'aruco = robot_control.aruco_final_test:main',
+            'task_json = robot_control.task_json:main'
         ],
     },
 )
