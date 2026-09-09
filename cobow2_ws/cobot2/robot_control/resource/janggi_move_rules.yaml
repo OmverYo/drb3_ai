@@ -1,0 +1,80 @@
+# janggi_move_rules.yaml
+#
+# 장기(Janggi) 기물별 이동 규칙 정의.
+# robot_control 노드가 이 파일을 읽어, before(집는 자리) -> after(놓을 자리) 이동이
+# 실제 장기 규칙상 유효한지 로봇 동작 전에 검사한다 (janggi_rules.JanggiRuleEngine).
+#
+# 좌표계: 이 파일 및 janggi_rules.py 는 robot_control.py 의 0-based (row0, col0) 좌표를
+# 그대로 사용한다 (사용자 입력 1행1열 -> row0=0, col0=0).
+#
+# 기물 클래스명 규칙: YOLO 클래스명은 "<피스타입>_<팀>" 형식이어야 한다.
+#   예) cha_red, cha_green, po_red, jol_green ...
+# 팀 이름(red/green)은 아래 forward_direction / palace 의 키와 반드시 일치해야 한다.
+
+board:
+  rows: 10
+  cols: 9
+
+# 궁성(구九宮) 정의: 각 팀 진영의 3x3 영역 + 대각선(米자) 라인.
+# diagonals 의 각 라인은 [코너, 중앙, 코너] 3점을 "순서대로" 나열한 것으로,
+# janggi_rules.py 는 이 순서(인덱스 차이)로 "몇 칸 이동인지", "사이에 낀 칸이 어디인지"를 계산한다.
+# 실제 보드 방향(어느 쪽이 row0/row9 인지)이 다르면 아래 좌표를 프로젝트 환경에 맞게 조정할 것.
+palace:
+  green:                 # 초(楚) 진영 - row0 기준 하단(0,1,2행)이라고 가정
+    rows: [0, 1, 2]
+    cols: [3, 4, 5]
+    diagonals:
+      - [[0, 3], [1, 4], [2, 5]]   # 좌상 - 중앙 - 우하
+      - [[0, 5], [1, 4], [2, 3]]   # 우상 - 중앙 - 좌하
+  red:                   # 한(漢) 진영 - row0 기준 상단(7,8,9행)이라고 가정
+    rows: [7, 8, 9]
+    cols: [3, 4, 5]
+    diagonals:
+      - [[7, 3], [8, 4], [9, 5]]
+      - [[7, 5], [8, 4], [9, 3]]
+
+# 졸/병이 "전진"하는 방향. row 증가 방향이면 +1, row 감소 방향이면 -1.
+# (자신의 궁성에서 상대 궁성 쪽으로 나아가는 방향과 일치해야 한다.)
+forward_direction:
+  green: 1
+  red: -1
+
+# 기물별 이동 타입.
+#   line          : 차(車) - 직선(가로/세로) 무제한, 경로에 다른 기물이 있으면 이동 불가.
+#                   palace_diagonal: true 이면 궁성 대각선 라인도 "직선"으로 취급.
+#   cannon        : 포(包) - line과 동일한 경로를 따르되, 경로 위에 다른 기물이
+#                   "정확히 하나" 있어야 이동/포획 가능(넘을 대상=screen).
+#   horse         : 마(馬) - (2,1) 나이트형 이동, 다리(leg) 한 칸이 막히면 불가.
+#   elephant      : 상(象) - (3,2) 코끼리형 이동, 다리 두 칸 중 하나라도 막히면 불가.
+#   palace_step   : 사(士)/왕(王,궁) - 궁성 내부에서만 한 칸(직선 또는 궁성 대각선) 이동.
+#   soldier       : 졸(卒) - green/red 상관없이 클래스명은 항상 "jol_<팀>". 앞/좌/우 한 칸,
+#                   궁성 안에서는 대각선(전진 방향)도 허용.
+#
+# 실제 사용 클래스명(팀 접미사 제외): cha, jol, ma, po, sa, sang, wang
+pieces:
+  cha:
+    move_type: line
+    max_distance: null            # null = 판 끝까지 (경로만 비어있으면 거리 제한 없음)
+    palace_diagonal: true
+
+  po:
+    move_type: cannon
+    max_distance: null
+    palace_diagonal: true
+    screen_forbidden_pieces: [po]     # 포는 포를 넘을 수 없음
+    capture_forbidden_pieces: [po]    # 포는 포를 잡을 수 없음
+
+  ma:
+    move_type: horse
+
+  sang:
+    move_type: elephant
+
+  sa:
+    move_type: palace_step
+
+  wang:
+    move_type: palace_step
+
+  jol:
+    move_type: soldier

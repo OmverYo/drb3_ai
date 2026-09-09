@@ -2,7 +2,6 @@ import os
 import time
 import sys
 import json
-import math
 import argparse
 import threading
 from scipy.spatial.transform import Rotation
@@ -13,13 +12,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
-from od_msg.srv import SrvDepthPosition, SrvAllPositions, SrvGraspPlan
+from od_msg.srv import SrvDepthPosition, SrvAllPositions
 from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
 from robot_control.aruco_calculator import ArucoCalculator
-from robot_control.task_json import TaskJsonPublisher, coordinate
+from robot_control.janggi_rules import load_rule_engine
 
 package_path = get_package_share_directory("robot_control")
 
@@ -28,26 +27,27 @@ ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 60, 60
 BUCKET_POS = [200.58, -26.07, 56.57]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
 JHOME_POS = [0, -30, 90, 0, 90, 0]
-PLACE_LIFT = 200.0
+PLACE_LIFT = 150.0
 PLACE_X_OFFSET = 0.0
 PLACE_Y_OFFSET = -8.0
 PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
 TOOLCHARGER_IP = "192.168.1.1"
 TOOLCHARGER_PORT = "502"
-GRIPPER_PREOPEN_RAW = 480
 DEPTH_OFFSET = -35.0
 MIN_DEPTH = 2.0
 
-# --- SAM 파지 각도(yaw) 보정 관련 설정 ---
-# hover 상태에서 /get_grasp_plan 서비스가 반환하는 후보 중, 이 점수 미만은
-# 파지 대상으로 선택하지 않는다(주변 말을 장애물로 넣는 것과는 무관).
-GRASP_MIN_SCORE = float(os.getenv('GRASP_MIN_SCORE', '0.5'))
-# 파지 계획이 반환하는 closing_axis_camera는 카메라 로컬 좌표계 기준이다.
-# BASE 프레임으로 회전 변환한 뒤, "rz=0일 때 툴 로컬 X축 = 집게가 열리고
-# 닫히는 축"이라고 가정하고 yaw를 계산한다. 실제 장착 각도가 이 가정과
-# 어긋나면(예: 집게 축이 90도 돌아가 있음) 여기 오프셋으로 보정한다.
-GRIPPER_YAW_OFFSET_DEG = float(os.getenv('GRIPPER_YAW_OFFSET_DEG', '0.0'))
+# after(놓을 자리) 점유 판별용 반경(mm). 장기말은 대략 원형이라, after 위치를
+# 중심으로 이 반경 안에 다른 detection 후보가 있으면 "이미 다른 말이 있다"고 본다.
+# 실제 말 크기에 맞춰 조정 가능.
+PIECE_MATCH_RADIUS_MM = 15.0
+
+# before(집는 위치) 판정용 최대 허용 거리(mm). 음성/비전 명령으로 지정한 칸(아루코
+# 계산 위치)과 실제 detection 사이 거리가 이 값을 넘으면, "그 칸에는 실제로 말이
+# 없는데 엉뚱하게 옆 칸의 말을 집으려 한다"고 보고 로봇 동작을 하지 않는다.
+# 반 칸(half-cell) 정도로 설정하는 것을 권장 - 보드 격자 간격(칸 크기)의 절반으로
+# 실측값에 맞게 조정할 것.
+BEFORE_PICK_MATCH_RADIUS_MM = 17.5
 
 # --- 비전 서비스(get_command) 관련 설정 ---
 # 음성(get_keyword)과 달리 별도의 "시작 신호"가 없다. get_command.py 노드가 뜨는 순간
@@ -94,8 +94,6 @@ class RobotController(Node):
     def __init__(self, mode: str = MODE):
         super().__init__("pick_and_place")
         self.mode = mode
-        # [JSON 추가] 기존 task_json 노드가 Flask 전송을 담당한다.
-        self.task_json = TaskJsonPublisher(self)
         
 
         # MultiThreadedExecutor 하에서 서비스 응답 콜백/타이머 콜백이 서로 블로킹 없이
@@ -114,33 +112,25 @@ class RobotController(Node):
 
         self.get_logger().info("ArucoCalculator initialized")
 
-        # hover 상태에서 SAM 기반 최적 파지 각도를 얻기 위한 서비스.
-        # voice/vision 모드 모두 파지 직전에 이 서비스를 사용하므로 모드와
-        # 무관하게 여기서 준비한다.
-        self.get_grasp_plan_client = self.create_client(
-            SrvGraspPlan, "/get_grasp_plan", callback_group=self.cb_group
-        )
+        # 장기 규칙(이동 제한) 엔진. 규칙은 janggi_move_rules.yaml 에서 관리하며,
+        # JANGGI_RULES_PATH 환경변수로 경로를 override 할 수 있다(load_rule_engine 참고).
+        self.rule_engine = load_rule_engine()
+        self.get_logger().info("JanggiRuleEngine initialized")
+        # (row0, col0) -> BASE xyz 캐시. 보드/궁성은 고정되어 있으므로 최초 1회만 계산.
+        self._cell_position_cache = None
 
         self.get_logger().info(f"RobotController mode = '{self.mode}'")
 
         self.isBucket = False
+
+        # voice/vision 공통: UI 알림 퍼블리셔(잘못된 착수 알림 등에도 사용).
+        self.ui_pub = self.create_publisher(String, "/ui/current_task", 10)
+        self._publish_task(None, None)
+
         if self.mode == "voice":
             self._init_voice_services()
         else:
             self._init_vision_service()
-
-    def _record_task(self, action, **fields):
-        # [JSON 추가] 기록 오류 처리는 여기서만 하고 로봇 동작으로 전파하지 않는다.
-        try:
-            if action == 'start':
-                for key in ('before', 'after'):
-                    if isinstance(fields.get(key), str):
-                        fields[key] = coordinate(fields[key])
-                self.task_json.start(**fields)
-            else:
-                self.task_json.finish(status=action, **fields)
-        except Exception:
-            self.get_logger().warn('Task JSON 기록 실패')
 
     def _init_voice_services(self):
         """옵션 1(기본): get_keyword(음성) + get_position(depth) 서비스만 준비한다."""
@@ -157,9 +147,6 @@ class RobotController(Node):
         while not self.get_keyword_client.wait_for_service(timeout_sec=3.0):
             self.get_logger().info("Waiting for get_keyword service...")
         self.get_keyword_request = Trigger.Request()
-
-        self.ui_pub = self.create_publisher(String, "/ui/current_task", 10)
-        self._publish_task(None, None)
 
     def _init_vision_service(self):
         """옵션 2: get_command(손동작 인식) 서비스만 준비하고 계속 폴링한다."""
@@ -203,6 +190,13 @@ class RobotController(Node):
             self.ui_pub.publish(String(data=json.dumps(data)))
         except Exception as e:
             self.get_logger().warn(f"_publish_task failed (non-critical): {e}")
+
+    def _publish_alert(self, message):
+        """잘못된 착수 등, 사용자에게 즉시 보여줘야 하는 알림을 UI 토픽으로 보낸다."""
+        try:
+            self.ui_pub.publish(String(data=json.dumps({"alert": message})))
+        except Exception as e:
+            self.get_logger().warn(f"_publish_alert failed (non-critical): {e}")
 
     def _wait_for_future(self, future, timeout_sec=None):
         """MultiThreadedExecutor가 별도 스레드에서 이미 spin 중이므로,
@@ -250,37 +244,167 @@ class RobotController(Node):
         future.add_done_callback(self._on_vision_response)
 
     def _on_vision_response(self, future):
-        """Vision provides source/destination cells; detection resolves piece identity."""
-        task_started = False
+        """조건 2: 응답 성공/실패, 인식된 커맨드 값에서 현재 위치와 이동할 위치값 추출하여 이동
+
+        추가된 규칙(장기 규칙 반영):
+        - after(놓을 자리)에 이미 다른 말이 있는지, 그 위치의 detection 후보들과
+          before 말의 클래스(편)를 비교해서 판별한다.
+        - 같은 편(예: 둘 다 *_red)이면 잘못된 착수이므로 알림만 띄우고 동작을 취소한다.
+        - 다른 편(상대 말)이면 포획: after 자리의 상대 말을 먼저 bucket으로 옮긴 뒤,
+          이어서 before -> after 이동을 수행한다.
+        - after 위치가 비어 있으면 기존과 동일하게 곧바로 before -> after 이동만 수행한다.
+        """
+        board_xyz_before = None
+        board_xyz_after = None
+        capture_target = None  # after 위치를 미리 점유하고 있는 상대 말(포획 대상)
+        abort_move = False
+        text_split = None
+
         try:
             result = future.result()
-            if result is None or not result.success:
-                return
-            parts = result.message.split()
-            if (len(parts) < 4 or parts[-1] not in ('release','bucket') or
-                    (parts[-1] == 'release' and len(parts) < 7)):
-                raise ValueError('Invalid vision command: ' + result.message)
-            before = f'{parts[0]},{parts[2]}'
-            after = f'{parts[4]},{parts[6]}' if parts[-1]=='release' else None
-            self._record_task('start',before=before,after=after)
-            task_started = True
-            self.isBucket = parts[-1]=='bucket'
-            # Preserve the requested cell XY. The old unconstrained nearest
-            # detection refinement could move the reference to another piece.
-            source = self.get_board_target_pos(before)
-            destination = BUCKET_POS if self.isBucket else self.get_board_target_pos(after)
-            if source is None or destination is None:
-                raise RuntimeError('Source/destination board position unavailable')
-            target_pos = [float(source[0]),float(source[1]),3.0,0.0,180.0,0.0]
-            self.pick_and_place_target(target_pos,destination,grasp_selector='*')
+            if result is not None and result.success:
+                self.get_logger().info(f"vision command: {result.message}")
+                # result.message example: "1 , 3 grap 3 , 4 release"
+                text_split = result.message.split(' ')
+
+                board_pos_before = f'{text_split[0]},{text_split[2]}'
+                # 이때 get_board_target_pos 내부에서 계산시 z 값은 realsense depth 카메라로 부터 받아서 사용해야 하므로, 필수로 켜줘야 함.
+                #1행 1열 부터 시작하는 텍스트 '(row,colunm)' 형태로 받아서 좌표값 xyz 로 반환. 
+                board_xyz_before = self.get_board_target_pos(board_pos_before)
+                if board_xyz_before is None:
+                    self.get_logger().warn(f"Invalid board target(before): {board_pos_before}")
+                    abort_move = True
+                else:
+                    # realsense 값 그대로 사용이 안됨. aruco 계산 시 보정 필요.
+                    # -> 아루코 추정 위치 근처에서 실제 detection 결과를 찾아 대체
+                    #    (클래스 무관, 최근접). 이때 그 후보의 클래스명도 함께 받아둔다
+                    #    (before 말의 편을 알아야 after 자리 점유 판별이 가능하므로).
+                    # max_dist(BEFORE_PICK_MATCH_RADIUS_MM)를 벗어나는 detection은
+                    # "다른 칸의 말"로 보고 무시한다 -> 반경 안에 아무 것도 없으면
+                    # (None, None)을 돌려받아 "빈 칸을 집으려 한 것"으로 처리한다.
+                    board_xyz_before, before_name = self.refine_board_pos_with_detection(
+                        board_xyz_before, max_dist=BEFORE_PICK_MATCH_RADIUS_MM
+                    )
+
+                    if board_xyz_before is None:
+                        msg = (
+                            f"선택한 위치({board_pos_before}) 반경 "
+                            f"{BEFORE_PICK_MATCH_RADIUS_MM}mm 이내에 감지된 장기말이 없습니다. "
+                            "빈 칸을 선택한 것으로 판단해 이동을 취소합니다."
+                        )
+                        self.get_logger().error(msg)
+                        self._publish_alert(msg)
+                        abort_move = True
+                    else:
+                        board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
+                        board_xyz_before[1] = board_xyz_before[1] + PLACE_Y_OFFSET
+                        board_xyz_before[2] = 3
+
+                        self.isBucket = False
+
+                        # after 위치는 판 내부 or 버킷(딴 상대방 말)
+                        if text_split[-1] == 'release':
+                            board_pos_after = f'{text_split[4]},{text_split[6]}'
+                            board_xyz_after = self.get_board_target_pos(board_pos_after)
+                            if board_xyz_after is None:
+                                self.get_logger().warn(f"Invalid board target(after): {board_pos_after}")
+                                abort_move = True
+                            else:
+                                # --- 장기 규칙(이동 제한) 검사 ---
+                                # before_name(예: cha_green)의 기물 타입에 맞는 이동 규칙
+                                # (janggi_move_rules.yaml)을 적용해, 이 before->after 이동이
+                                # 실제 장기 규칙상 유효한지(예: 차라면 경로 위에 다른 말이
+                                # 없어야 함) 검사한다. 위반 시 로봇 동작을 아예 수행하지 않는다.
+                                before_parsed = self.parse_board_destination(board_pos_before)
+                                after_parsed = self.parse_board_destination(board_pos_after)
+                                if before_parsed is None or after_parsed is None:
+                                    msg = "장기 규칙 검사 실패: 좌표를 해석할 수 없습니다."
+                                    self.get_logger().error(msg)
+                                    self._publish_alert(msg)
+                                    abort_move = True
+                                else:
+                                    before_rc = before_parsed[2:4]
+                                    after_rc = after_parsed[2:4]
+                                    occupancy_grid = self.build_occupancy_grid()
+                                    move_result = self.rule_engine.validate_move(
+                                        before_name, before_rc, after_rc, occupancy_grid
+                                    )
+                                    if not move_result.ok:
+                                        msg = f"룰 위반으로 이동을 취소합니다: {move_result.reason}"
+                                        self.get_logger().error(msg)
+                                        self._publish_alert(msg)
+                                        abort_move = True
+
+                            if abort_move:
+                                pass
+                            else:
+                                # after 위치를 이미 점유하고 있는 말이 있는지 검사.
+                                # (타겟 크기만큼의 반경 안에 다른 detection이 겹치면 점유로 판단)
+                                occupant = self.find_piece_at(board_xyz_after)
+                                if occupant is not None:
+                                    before_team = (
+                                        before_name.rsplit('_', 1)[-1] if before_name else None
+                                    )
+                                    occupant_team = occupant['name'].rsplit('_', 1)[-1]
+                                    if before_team is not None and occupant_team == before_team:
+                                        msg = (
+                                            f"잘못된 착수: after 위치에 같은 편 기물"
+                                            f"({occupant['name']})이 이미 있습니다. 이동을 취소합니다."
+                                        )
+                                        self.get_logger().error(msg)
+                                        self._publish_alert(msg)
+                                        abort_move = True
+                                    else:
+                                        self.get_logger().info(
+                                            f"상대 기물 포획: {occupant['name']}을(를) bucket으로 "
+                                            f"옮긴 뒤 before->after 이동을 진행합니다."
+                                        )
+                                        capture_target = occupant
+                        elif text_split[-1] == 'bucket':
+                            self.isBucket = True
+                            board_xyz_after = BUCKET_POS
+                        else:
+                            self.get_logger().warn(
+                                f"Unknown vision command suffix: {text_split[-1]}"
+                            )
+                            abort_move = True
+            else:
+                reason = result.message if result is not None else "no_response"
+                self.get_logger().info(f"vision service 응답 실패/대기중: {reason}")
+                abort_move = True
+        except Exception as e:
+            self.get_logger().error(f"vision 서비스 응답 처리 실패: {e}")
+            abort_move = True
+
+        if abort_move or board_xyz_before is None or board_xyz_after is None:
+            # 잘못된 착수/파싱 실패 등 - 아무 동작도 수행하지 않고 다음 요청을 받는다.
+            with self._vision_lock:
+                self._vision_busy = False
+            return
+
+        try:
+            #이전 pos 는 쓰잘때기 없는? 회전 값까지 요구하므로, 이를 결국 제자리 값인 0'-180'-0' 로 회전하도록 == 회전 안하도록 줌.
+            board_xyzRyRzRy_before = [float(board_xyz_before[0]), float(board_xyz_before[1]), float(board_xyz_before[2])] + [0.0, 180.0, 0.0]
+
+            if capture_target is not None:
+                # 상대 말을 먼저 bucket으로 이동(포획)한 다음, 원래 이동을 이어서 수행.
+                capture_pos = [
+                    float(capture_target['pos'][0]),
+                    float(capture_target['pos'][1]) + PLACE_Y_OFFSET,
+                    3.0,
+                ] + [0.0, 180.0, 0.0]
+                self.isBucket = True
+                self.pick_and_place_target(capture_pos, BUCKET_POS)
+                # 원래 목적지가 bucket이 아니었다면 isBucket 상태를 되돌려 놓는다.
+                self.isBucket = (text_split[-1] == 'bucket')
+
+            #after 값은 pick_and_place_target() 내부에서 before 처럼 변환 수행하므로 그대로 넣어줌.
+            self.pick_and_place_target(board_xyzRyRzRy_before, board_xyz_after)
             self.init_robot()
-            self._record_task('completed' if rclpy.ok() else 'failed')
-        except Exception as error:
-            self.get_logger().error('Vision task failed: ' + str(error))
-            if task_started:
-                self._record_task('failed',error=str(error))
+        except Exception as e:
+            self.get_logger().error(f"vision 이동 실패: {e}")
         finally:
-            self.isBucket = False
+            # 이동이 끝난 뒤에야 다음 요청을 허용 (조건 3)
             with self._vision_lock:
                 self._vision_busy = False
 
@@ -304,70 +428,6 @@ class RobotController(Node):
 
         return td_coord[:3]
     
-    def get_grasp_plan(self, target, reference_pos):
-        """Identify the target after camera motion and return its corrected pose."""
-        capture_pose = np.asarray(get_current_posx()[0], float)
-        hand_eye = np.load(self.gripper2cam_path)
-        T = self.get_robot_pose_matrix(*capture_pose) @ hand_eye
-        request = SrvGraspPlan.Request()
-        request.target = str(target).split('@', 1)[0]
-        request.min_score = GRASP_MIN_SCORE
-        request.use_reference = True
-        request.reference_base_xy_mm = [float(v) for v in reference_pos[:2]]
-        request.base_from_camera = T.reshape(-1).tolist()
-        request.max_target_distance_mm = float(os.getenv('GRASP_TARGET_GATE_MM', '15'))
-        request.ambiguity_margin_mm = float(os.getenv('GRASP_TARGET_AMBIGUITY_MM', '5'))
-        future = self.get_grasp_plan_client.call_async(request)
-        if not self._wait_for_future(future, timeout_sec=20.0) or not rclpy.ok():
-            future.cancel()
-            raise RuntimeError('Grasp plan timed out; no descent')
-        result = future.result()
-        if result is None or not result.success:
-            raise RuntimeError('Grasp plan failed: ' + (result.message if result else 'no response'))
-        current_pose = np.asarray(get_current_posx()[0], float)
-        R_before = self.get_robot_pose_matrix(*capture_pose)[:3,:3]
-        R_after = self.get_robot_pose_matrix(*current_pose)[:3,:3]
-        angle = math.degrees(math.acos(float(np.clip((np.trace(R_before.T @ R_after)-1)/2,-1,1))))
-        if np.linalg.norm(current_pose[:3]-capture_pose[:3]) > 1 or angle > 1:
-            raise RuntimeError('Camera moved during grasp inference; reacquire')
-        camera_point = np.asarray(result.camera_position_mm, float)
-        if camera_point.shape != (3,) or not np.all(np.isfinite(camera_point)):
-            raise RuntimeError('Invalid SAM target position')
-        base_xyz = T[:3,:3] @ camera_point + T[:3,3]
-        if np.linalg.norm(base_xyz[:2]-np.asarray(reference_pos[:2])) > request.max_target_distance_mm:
-            raise RuntimeError('Final SAM centre outside target gate')
-        approach_base = T[:3,:3] @ np.asarray(result.approach_axis_camera, float)
-        if not np.all(np.isfinite(approach_base)) or not np.allclose(approach_base,[0,0,-1],atol=0.02):
-            raise RuntimeError('Planner approach differs from Base vertical')
-        if not np.isfinite(result.clearance_mm) or result.clearance_mm <= 0:
-            raise RuntimeError('Invalid clearance')
-        rx,ry,rz = self._grasp_yaw_to_base_euler(result.closing_axis_camera, capture_pose)
-        # Retain the already configured grasp Z (vision=3 mm). SAM adjusts XY/yaw only.
-        pose = [float(base_xyz[0]),float(base_xyz[1]),float(reference_pos[2]),rx,ry,rz]
-        self.get_logger().info(
-            f"Target={result.detected_name}, distance={result.target_distance_mm:.1f}mm, "
-            f"fixed opening command=480, "
-            f"clearance={result.clearance_mm:.1f}mm"
-        )
-        return pose
-
-    def _grasp_yaw_to_base_euler(self, closing_axis_camera, robot_posx):
-        R = (self.get_robot_pose_matrix(*robot_posx) @ np.load(self.gripper2cam_path))[:3,:3]
-        axis = R @ np.asarray(closing_axis_camera,float)
-        if not np.all(np.isfinite(axis)) or np.linalg.norm(axis[:2]) < 0.9 or abs(axis[2]) > 0.05:
-            raise ValueError('Invalid/non-horizontal closing axis')
-        phi = math.degrees(math.atan2(axis[1],axis[0])) + GRIPPER_YAW_OFFSET_DEG
-        # Explicit ZYZ at beta=180 avoids singular Euler decomposition.
-        # alpha-180 is tool X heading. The fingers have 180-degree symmetry.
-        candidates = [phi-180, phi]
-        current_R = self.get_robot_pose_matrix(*robot_posx)[:3,:3]
-        def rotation_cost(alpha):
-            next_R = self.get_robot_pose_matrix(0,0,0,alpha,180,0)[:3,:3]
-            return -float(np.trace(current_R.T @ next_R))
-        alpha = min(candidates,key=rotation_cost)
-        alpha = (alpha+180)%360-180
-        return float(alpha),180.0,0.0
-
     def parse_board_destination(self,dest):
         if dest is None:
             return None
@@ -434,25 +494,16 @@ class RobotController(Node):
 
             for i, target in enumerate(tools):
                 dest = dests[i] if i < len(dests) else None
-                # [JSON 추가] voice 말 이름과 도착 행·열 기록.
-                self._record_task('start', piece=target, after=dest)
-                try:
-                    self._publish_task(target, dest)
-                    board_xyz = self.get_board_target_pos(dest)
-                    if board_xyz is None:
-                        self.get_logger().warn(f"Invalid board target: {dest}")
-                        self._record_task('failed', error=f'Board position unavailable: {dest}')
-                        continue
-                    target_pos = self.get_target_pos(target)
-                    if target_pos is None:
-                        self._record_task('failed', error=f'Piece not detected: {target}')
-                        continue
-                    self.pick_and_place_target(target_pos, board_xyz, grasp_selector=target)
-                    self.init_robot()
-                    self._record_task('completed' if rclpy.ok() else 'failed')
-                except Exception as e:
-                    self._record_task('failed', error=str(e))
-                    raise
+                self._publish_task(target, dest)
+                board_xyz = self.get_board_target_pos(dest)
+                if board_xyz is None:
+                    self.get_logger().warn(f"Invalid board target: {dest}")
+                    continue
+                target_pos = self.get_target_pos(target)
+                if target_pos is None:
+                    continue
+                self.pick_and_place_target(target_pos, board_xyz)
+                self.init_robot()
 
             self._publish_task(None, None)
 
@@ -499,54 +550,149 @@ class RobotController(Node):
             target_pos = list(td_coord[:3]) + robot_posx[3:]
         return target_pos
 
-    def refine_board_pos_with_detection(self, reference_xyz, max_dist=None):
-        """아루코 기반 board_xyz(reference_xyz, BASE 프레임)와 가장 가까운
-        실제 detection 결과를 찾아 BASE 프레임 좌표로 반환한다.
-        클래스 무관, 화면에 보이는 모든 detection 후보 중 최근접을 사용한다.
-        적절한 후보가 없거나 서비스 응답이 없으면 reference_xyz(아루코 계산값)를 그대로 반환한다.
-
-        max_dist: None이 아니면, 최근접 후보와의 거리가 이 값(mm)을 넘을 때
-                  오검출로 간주하고 아루코 계산값을 그대로 사용한다.
+    def _get_all_detections_base(self, min_score=0.0):
+        """get_all_positions 서비스로 현재 화면의 모든 detection 후보를 가져와
+        BASE 프레임 좌표로 변환한 뒤 리스트로 반환한다.
+        각 원소는 {'pos': np.array([x,y,z]), 'name': str, 'score': float}.
+        서비스 응답이 없거나 후보가 없으면 빈 리스트를 반환한다.
+        refine_board_pos_with_detection()과 find_piece_at()이 공통으로 사용한다.
         """
-        if reference_xyz is None:
-            return None
-
-        self.get_all_positions_request.min_score = 0.0
+        self.get_all_positions_request.min_score = min_score
         future = self.get_all_positions_client.call_async(self.get_all_positions_request)
         self._wait_for_future(future, timeout_sec=5.0)
         if not rclpy.ok():
-            return reference_xyz
+            return []
 
         result = future.result()
         if result is None or len(result.x) == 0:
-            self.get_logger().warn("get_all_positions: 후보 없음. 아루코 계산값 사용.")
-            return reference_xyz
+            return []
 
         robot_posx = get_current_posx()[0]
-        ref = np.array(reference_xyz[:3], dtype=float)
+        names = list(result.name) if len(result.name) == len(result.x) else [None] * len(result.x)
 
-        best_base_xyz = None
-        best_dist = None
-        for cam_x, cam_y, cam_z, score in zip(result.x, result.y, result.z, result.score):
+        detections = []
+        for cam_x, cam_y, cam_z, score, name in zip(
+            result.x, result.y, result.z, result.score, names
+        ):
             base_xyz = self.transform_to_base(
                 [cam_x, cam_y, cam_z], self.gripper2cam_path, robot_posx
             )
-            dist = float(np.linalg.norm(base_xyz - ref))
+            detections.append({
+                "pos": np.asarray(base_xyz, dtype=float),
+                "name": name,
+                "score": float(score),
+            })
+        return detections
+
+    def refine_board_pos_with_detection(self, reference_xyz, max_dist=None):
+        """아루코 기반 board_xyz(reference_xyz, BASE 프레임)와 가장 가까운
+        실제 detection 결과를 찾아 (BASE 프레임 좌표, 클래스명)을 반환한다.
+        클래스 무관, 화면에 보이는 모든 detection 후보 중 최근접을 사용한다.
+
+        max_dist: None이면 거리 제한 없이 최근접 후보를 그대로 사용한다(과거 동작과 동일).
+                  값이 주어지면, 최근접 후보와의 거리가 이 값(mm)을 넘거나 후보가 아예
+                  없을 때 "그 위치엔 실제 말이 없다"고 판단해 (None, None)을 반환한다.
+                  before(집는 위치) 판정처럼 "빈 칸을 잘못 지정했는지" 걸러내야 하는
+                  경우 반드시 max_dist를 지정해서 호출할 것.
+        """
+        if reference_xyz is None:
+            return None, None
+
+        detections = self._get_all_detections_base()
+        if not detections:
+            if max_dist is not None:
+                self.get_logger().warn("get_all_positions: 후보 없음. 빈 칸으로 판단합니다.")
+                return None, None
+            self.get_logger().warn("get_all_positions: 후보 없음. 아루코 계산값 사용.")
+            return reference_xyz, None
+
+        ref = np.array(reference_xyz[:3], dtype=float)
+        best = None
+        best_dist = None
+        for det in detections:
+            dist = float(np.linalg.norm(det["pos"] - ref))
             if best_dist is None or dist < best_dist:
                 best_dist = dist
-                best_base_xyz = base_xyz
+                best = det
 
-        if best_base_xyz is None or (max_dist is not None and best_dist > max_dist):
+        if best is None or (max_dist is not None and best_dist > max_dist):
+            if max_dist is not None:
+                self.get_logger().warn(
+                    f"get_all_positions: 반경 {max_dist}mm 이내에 유효 후보 없음"
+                    f"(best_dist={best_dist}). 빈 칸으로 판단합니다."
+                )
+                return None, None
             self.get_logger().warn(
                 f"get_all_positions: 유효 후보 없음(best_dist={best_dist}). 아루코 계산값 사용."
             )
-            return reference_xyz
+            return reference_xyz, None
 
         self.get_logger().info(
-            f"board_xyz_before 보정: 아루코={list(ref)} -> detection={list(best_base_xyz)} "
-            f"(dist={best_dist:.2f}mm)"
+            f"board_xyz_before 보정: 아루코={list(ref)} -> detection={list(best['pos'])} "
+            f"(class={best['name']}, dist={best_dist:.2f}mm)"
         )
-        return list(best_base_xyz)
+        return list(best["pos"]), best["name"]
+
+    def find_piece_at(self, position, radius=PIECE_MATCH_RADIUS_MM):
+        """position(BASE 프레임 [x, y, z...])을 중심으로 radius(mm) 안에 있는
+        detection 후보 중 가장 가까운 것을 반환한다: {'pos', 'name', 'score'}.
+        범위 안에 아무 후보도 없으면 None.
+
+        타겟(장기말)을 after 위치에 놓으려 할 때, 그 자리에 이미 다른 말이
+        있는지(=범위 내 겹침)를 판별하는 용도.
+        """
+        detections = self._get_all_detections_base()
+        if not detections:
+            return None
+
+        ref = np.array(position[:3], dtype=float)
+        best = None
+        best_dist = None
+        for det in detections:
+            dist = float(np.linalg.norm(det["pos"] - ref))
+            if dist <= radius and (best_dist is None or dist < best_dist):
+                best_dist = dist
+                best = det
+        return best
+
+    def _get_cell_positions(self):
+        """{(row0, col0): BASE xyz(np.array)} 전체 보드 칸 좌표 캐시.
+
+        보드/카메라가 고정되어 있다는 전제 하에 최초 호출 시 1회만 계산한다.
+        아루코 마커가 흔들리거나 카메라가 재조정된 경우 self._cell_position_cache = None
+        으로 초기화하면 다음 호출에서 다시 계산한다.
+        """
+        if self._cell_position_cache is not None:
+            return self._cell_position_cache
+
+        cache = {}
+        rows = self.rule_engine.rows
+        cols = self.rule_engine.cols
+        for row0 in range(rows):
+            for col0 in range(cols):
+                base_xyz = self.aruco_calculator.get_base_point(row0, col0)
+                if base_xyz is None:
+                    continue
+                cache[(row0, col0)] = np.asarray(base_xyz[:3], dtype=float)
+
+        if not cache:
+            self.get_logger().warn("보드 칸 좌표 캐시 생성 실패(아루코 계산값 없음).")
+            return {}
+
+        self._cell_position_cache = cache
+        return cache
+
+    def build_occupancy_grid(self):
+        """현재 화면의 모든 detection을 (row0, col0) 보드 칸으로 스냅한 occupancy dict를 만든다.
+
+        {(row0, col0): {'pos':..., 'name':..., 'score':...}} 형태이며, 빈 칸은 키가 없다.
+        JanggiRuleEngine.validate_move()의 occupancy 인자로 그대로 사용한다.
+        """
+        detections = self._get_all_detections_base()
+        cell_positions = self._get_cell_positions()
+        return self.rule_engine.build_occupancy_from_detections(
+            detections, cell_positions, match_radius=PIECE_MATCH_RADIUS_MM
+        )
 
     def init_robot(self):
         
@@ -557,38 +703,12 @@ class RobotController(Node):
 
         self.set_board_sync(True)
 
-    def pick_and_place_target(self, target_pos, board_xyz, grasp_selector=None):
-        """Inspect -> rotate/open/align at clearance height -> vertical descent."""
-        if grasp_selector is None:
-            raise ValueError('A class or wildcard plus physical reference is required')
-        if (len(target_pos)!=6 or not np.all(np.isfinite(target_pos))
-                or board_xyz is None or not np.all(np.isfinite(board_xyz))):
-            raise ValueError('Invalid pick/place coordinates')
-        # Opening command is fixed; no width calibration/interpolation needed here.
+    def pick_and_place_target(self, target_pos, board_xyz):
         self.set_board_sync(False)
-        lift_pos = list(target_pos[:2]) + [float(target_pos[2])+PLACE_LIFT,0.0,180.0,0.0]
-        movel(lift_pos,vel=VELOCITY,acc=ACC)
-        mwait()
-        time.sleep(0.2)
-        grasp_pos = self.get_grasp_plan(grasp_selector,target_pos)
-        # No fallback descent after a failed or ambiguous plan.
-        rotated_hover = lift_pos[:3] + grasp_pos[3:]
-        movel(rotated_hover,vel=VELOCITY,acc=ACC)
-        mwait()
-        gripper.move_gripper(GRIPPER_PREOPEN_RAW)
-        time.sleep(0.2)
-        deadline = time.monotonic()+10.0
-        while rclpy.ok() and gripper.get_status()[0]:
-            if time.monotonic()>deadline:
-                raise RuntimeError('Gripper opening timeout; no descent')
-            time.sleep(0.05)
-        if not rclpy.ok():
-            raise RuntimeError('ROS stopped before descent')
-        aligned_hover = grasp_pos[:2]+[lift_pos[2]]+grasp_pos[3:]
-        movel(aligned_hover,vel=VELOCITY,acc=ACC)
-        mwait()
-        # Same XY and orientation for hover and grasp: pure vertical motion.
-        movel(grasp_pos,vel=VELOCITY,acc=ACC)
+
+        lift_pos = target_pos[:2] + [target_pos[2] + PLACE_LIFT] + target_pos[3:]
+        movel(lift_pos, vel=VELOCITY, acc=ACC)
+        movel(target_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.close_gripper()
 
@@ -596,18 +716,15 @@ class RobotController(Node):
             time.sleep(0.5)
         mwait()
 
-        # 실제로 집은 지점(grasp_pos)에서 바로 위로 들어올린다.
-        # (파지 자세가 보정되었는데 여기서 옛 lift_pos를 쓰면 XY가 어긋난다.)
-        retreat_pos = grasp_pos[:2] + [grasp_pos[2] + PLACE_LIFT] + grasp_pos[3:]
-        movel(retreat_pos, vel=VELOCITY, acc=ACC)
+        
+        movel(lift_pos, vel=VELOCITY, acc=ACC)
         mwait()
 
-        hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + grasp_pos[3:]
+        hover_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), PLACE_LIFT,] + target_pos[3:]
         if self.isBucket :
-            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + grasp_pos[3:]
-            self.isBucket = False
+            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + target_pos[3:]
         else :
-            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + grasp_pos[3:]
+            place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
         self.get_logger().info(f"Janggi place position: {place_pos}")
 
         movel(hover_pos, vel=VELOCITY, acc=ACC)
@@ -651,8 +768,6 @@ def main(args=None):
         pass
     finally:
         executor.shutdown()
-        # [JSON 추가] 종료 시 진행 중인 Task가 있으면 미완료로 기록한다.
-        node._record_task('failed', error='Robot control stopped before completion')
         node.destroy_node()
         rclpy.shutdown()
         executor_thread.join(timeout=1.0)

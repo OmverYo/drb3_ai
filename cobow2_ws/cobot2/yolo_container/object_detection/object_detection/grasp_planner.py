@@ -6,10 +6,8 @@ import os
 import cv2
 import numpy as np
 
+# SAM 마스크 추출
 
-# ---------------------------------------------------------------------------
-# 1. SAM mask model
-# ---------------------------------------------------------------------------
 class SamMaskModel:
     def __init__(self, package_name='object_detection'):
         from ament_index_python.packages import get_package_share_directory
@@ -44,11 +42,8 @@ class SamMaskModel:
                 raise ValueError('SAM mask spills outside its YOLO prompt; reacquire')
         return list(masks)
 
+# 평면 충돌 검사 및 회전각 탐색
 
-# ---------------------------------------------------------------------------
-# 2. Planar collision / yaw search (fixed-centre raster search, no learned
-#    grasp predictor)
-# ---------------------------------------------------------------------------
 @dataclass
 class PlanarPlan:
     yaw_deg: float
@@ -56,7 +51,6 @@ class PlanarPlan:
     target_width_mm: float
     clearance_mm: float
     finger_polygons: list
-
 
 class PlanarSafetyEvaluator:
     def __init__(self, scale=2.0, max_opening_mm=100.0,
@@ -146,10 +140,8 @@ class PlanarSafetyEvaluator:
                 best = plan
         return best
 
+# SAM·깊이 영상 기반 파지 계획
 
-# ---------------------------------------------------------------------------
-# 3. Orchestration: SAM masks + depth -> metric raster -> yaw search -> pose
-# ---------------------------------------------------------------------------
 @dataclass
 class GraspPlanResult:
     success: bool = False
@@ -164,7 +156,6 @@ class GraspPlanResult:
     closing_axis_camera: list = field(default_factory=lambda: [0., 0., 0.])
     approach_axis_camera: list = field(default_factory=lambda: [0., 0., 0.])
     message: str = ''
-
 
 class SamGraspPlanner:
     def __init__(self, logger=None):

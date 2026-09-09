@@ -4,9 +4,11 @@ float64 min_score
 ---
 # Response
 # 카메라 프레임 3D 좌표 (아직 베이스 프레임으로 변환되지 않음).
-# 인덱스 i의 x[i], y[i], z[i], score[i]가 같은 detection 하나를 의미한다(병렬 배열).
+# 인덱스 i의 x[i], y[i], z[i], score[i], name[i]가 같은 detection 하나를 의미한다(병렬 배열).
 # detection이 하나도 없으면 모두 빈 배열.
 float64[] x
 float64[] y
 float64[] z
 float64[] score
+# YOLO 클래스명 (예: cha_red, jol_green ...). 장기말 클래스 비교(같은 편/상대 말 판별)에 사용.
+string[] name

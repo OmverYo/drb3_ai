@@ -8,10 +8,9 @@ from rclpy.node import Node
 from std_srvs.srv import SetBool
 
 from ament_index_python.packages import get_package_share_directory
-from od_msg.srv import SrvDepthPosition, SrvAllPositions, SrvGraspPlan
+from od_msg.srv import SrvDepthPosition, SrvAllPositions
 from object_detection.realsense import ImgNode
 from object_detection.yolo import YoloModel
-from object_detection.grasp_planner import SamMaskModel, SamGraspPlanner
 from object_detection.aruco import (
     ArucoModel, board_reference_points_mm,
     BOARD_W_MM, BOARD_H_MM, GRID_COLS, GRID_ROWS, GRID_X_MM, GRID_Y_MM,
@@ -27,23 +26,6 @@ class ObjectDetectionNode(Node):
         super().__init__('object_detection_node')
         self.img_node = ImgNode()
         self.model = self._load_model(model_name)
-        self.sam = None
-        self.sam_error = ""
-        try:
-            self.sam = SamMaskModel(PACKAGE_NAME)
-        except Exception as error:
-            self.sam_error = str(error)
-            self.get_logger().error(f"SAM grasp service disabled: {error}")
-        self.grasp_planner = SamGraspPlanner(self.get_logger())
-        self.grasp_config_error = ""
-        try:
-            self.grasp_planner.geometry()
-            self.grasp_planner.axes()
-        except Exception as error:
-            self.grasp_config_error = str(error)
-            self.get_logger().error(
-                f"Grasp planner misconfigured, /get_grasp_plan will fail until fixed: {error}"
-            )
         self.intrinsics = self._wait_for_valid_data(
             self.img_node.get_camera_intrinsic, "camera intrinsics"
         )
@@ -61,11 +43,6 @@ class ObjectDetectionNode(Node):
             'get_all_positions',
             self.handle_get_all_positions
         )
-        self.create_service(
-            SrvGraspPlan,
-            'get_grasp_plan',
-            self.handle_get_grasp_plan,
-        )
 
         self.board_api_url = os.getenv(
             'JANGGI_BOARD_API_URL', 'http://127.0.0.1:5000/api/board'
@@ -80,6 +57,7 @@ class ObjectDetectionNode(Node):
             self.handle_set_board_sync
         )
         self.board_timer = self.create_timer(sync_interval, self._sync_board)
+        self.create_timer(sync_interval, self._sync_board)
         self.get_logger().info("ObjectDetectionNode initialized.")
         self.get_logger().info(
             "Board mapping: ArucoCalculator reference corners; "
@@ -268,24 +246,25 @@ class ObjectDetectionNode(Node):
         self.get_logger().info(
             f"Received get_all_positions request (min_score={request.min_score})"
         )
-        xs, ys, zs, scores = self._compute_all_positions(min_score=request.min_score)
+        xs, ys, zs, scores, names = self._compute_all_positions(min_score=request.min_score)
         response.x = xs
         response.y = ys
         response.z = zs
         response.score = scores
+        response.name = names
         return response
 
     def _compute_all_positions(self, min_score=0.0):
         # get_all_detections()가 이미 img_node.spin_once()/프레임 수집을 내부에서 처리한다.
         detections = self.model.get_all_detections(self.img_node)
 
-        xs, ys, zs, scores = [], [], [], []
+        xs, ys, zs, scores, names = [], [], [], [], []
         for det in detections:
             score = det["score"]
             if score < min_score:
                 continue
             box = det["box"]
-            cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
+            cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2])
             cz = self._get_depth(cx, cy)
             if cz is None:
                 continue
@@ -294,11 +273,12 @@ class ObjectDetectionNode(Node):
             ys.append(y)
             zs.append(z)
             scores.append(float(score))
+            names.append(str(det.get("name", "")))
 
         if not xs:
             self.get_logger().warn("No detections found for get_all_positions.")
 
-        return xs, ys, zs, scores
+        return xs, ys, zs, scores, names
 
     def handle_get_depth(self, request, response):
         self.get_logger().info(f"Received request: {request}")
@@ -306,156 +286,10 @@ class ObjectDetectionNode(Node):
         response.depth_position = [float(x) for x in coords]
         return response
 
-    def handle_get_grasp_plan(self, request, response):
-        """Return failures instead of letting inference exceptions kill the node."""
-        try:
-            return self._handle_grasp_plan(request, response)
-        except Exception as error:
-            response.success = False
-            response.message = str(error)
-            self.get_logger().warning('Grasp service rejected: ' + str(error))
-            return response
-
-    def _handle_grasp_plan(self, request, response):
-        response.success = False
-        response.planner = "none"
-        response.camera_position_mm = [0.0, 0.0, 0.0]
-        response.safe_yaw_deg = 0.0
-        response.grasp_width_mm = 0.0
-        response.clearance_mm = 0.0
-        response.score = 0.0
-        response.yaw_reference = "camera_local"
-        response.message = ""
-
-        # Missing dimensions must not be silently replaced with invented geometry.
-        self.grasp_planner.geometry()
-
-        if self.sam is None:
-            response.message = f"SAM unavailable: {self.sam_error}"
-            return response
-
-        color, depth, depth_scale = self.img_node.get_synced_rgbd()
-        if color is None or depth is None:
-            response.message = "Timed out waiting for aligned RGB-D frames."
-            return response
-        if color.shape[:2] != depth.shape[:2]:
-            response.message = (
-                f"Color/depth shape mismatch: {color.shape[:2]} vs {depth.shape[:2]}"
-            )
-            return response
-
-        aruco_corners = self.aruco.get_board_reference_pixels(self.aruco.detect(color))
-        if aruco_corners is not None:
-            homography = self._board_homography(aruco_corners, from_aruco=True)
-        else:
-            # An image homography from the overview cannot be reused after a
-            # wrist-mounted camera moves. Static fallback is for old services only.
-            homography = None
-        min_score = float(request.min_score)
-        if not np.isfinite(min_score) or not 0 <= min_score <= 1:
-            raise ValueError('min_score must be in [0,1]')
-        # Keep low-confidence neighbor detections even when target confidence is high.
-        detections = self.model.detect_frame(color, confidence_threshold=0.1)
-        target_name, board_cell, pixel = self._parse_grasp_selector(request.target)
-        masks = self.sam.segment_boxes(color, detections)
-        if len(masks) != len(detections):
-            raise ValueError('SAM detection/mask count mismatch')
-        approach_camera = None
-        response.target_distance_mm = 0.0
-        if request.use_reference:
-            # The old board selector is resolved at overview; only physical XY
-            # and optional class are used after the camera moves to inspection.
-            if board_cell is not None or pixel is not None:
-                raise ValueError('Reference requests use only a class name or *')
-            target_index, distance, approach_camera = self.grasp_planner.select_target_by_base_xy(
-                detections, masks, depth, depth_scale,
-                self.img_node.get_camera_intrinsic(),
-                request.base_from_camera, request.reference_base_xy_mm,
-                target_name=target_name, min_score=min_score,
-                max_distance_mm=float(request.max_target_distance_mm),
-                ambiguity_mm=float(request.ambiguity_margin_mm),
-            )
-            response.target_distance_mm = float(distance)
-        else:
-            # Manual testing only: exact visible board cell, current pixel,
-            # or a unique class. No image-centre fallback.
-            if board_cell is not None and homography is None:
-                raise ValueError('Board cell not visible; use the controller Base XY request')
-            indices = [
-                i for i, d in enumerate(detections)
-                if (target_name is None or d['name'] == target_name)
-                and d['score'] >= min_score
-                and (board_cell is None or self._pixel_to_board_cell(d['box'], homography) == board_cell)
-                and (pixel is None or (
-                    d['box'][0] <= pixel[0] <= d['box'][2] and
-                    d['box'][1] <= pixel[1] <= d['box'][3]))
-            ]
-            if len(indices) != 1:
-                raise ValueError('Target missing or ambiguous; specify Base XY or an explicit selector')
-            target_index = indices[0]
-        response.detected_name = str(detections[target_index]['name'])
-
-        plan = self.grasp_planner.plan(
-            depth=depth,
-            depth_scale=depth_scale,
-            intrinsics=self.img_node.get_camera_intrinsic(),
-            masks=masks,
-            target_index=target_index,
-            approach_camera=approach_camera,
-        )
-        response.success = bool(plan.success)
-        response.planner = plan.planner
-        response.camera_position_mm = list(plan.camera_position_mm)
-        response.safe_yaw_deg = plan.safe_yaw_deg
-        response.grasp_width_mm = plan.grasp_width_mm
-        response.clearance_mm = plan.clearance_mm
-        response.score = float(detections[target_index]['score']) if plan.success else 0.0
-        response.yaw_reference = plan.yaw_reference
-        response.target_width_mm = plan.target_width_mm
-        response.closing_axis_camera = plan.closing_axis_camera
-        response.approach_axis_camera = plan.approach_axis_camera
-        response.message = plan.message
-        self.get_logger().info(
-            f"grasp plan: success={plan.success}, planner={plan.planner}, "
-            f"yaw={plan.safe_yaw_deg:.1f} deg, width={plan.grasp_width_mm:.1f} mm, "
-            f"clearance={plan.clearance_mm:.1f} mm"
-        )
-        return response
-
-    @staticmethod
-    def _parse_grasp_selector(selector):
-        """Strict selector parsing only for the new service.
-
-        A class of '*' means any class; physical Base XY resolves identity
-        for vision requests. It does not select the image-centre candidate.
-        """
-        name, sep, suffix = str(selector).strip().partition('@')
-        if not name:
-            raise ValueError('Empty target class')
-        name = None if name == '*' else name
-        if not sep:
-            return name, None, None
-        if suffix.startswith('px:'):
-            values = [float(x) for x in suffix[3:].split(',')]
-            if len(values) != 2 or not np.all(np.isfinite(values)) or min(values) < 0:
-                raise ValueError('Use class@px:u,v with valid image coordinates')
-            return name, None, tuple(values)
-        parts = suffix.replace('-', ',').split(',')
-        if len(parts) != 2:
-            raise ValueError('Use class@row,col or class@px:u,v')
-        row, col = map(int, parts)
-        if not (1 <= row <= GRID_ROWS and 1 <= col <= GRID_COLS):
-            raise ValueError('Board cell out of range')
-        return name, (row-1, col-1), None
-
     def _compute_position(self, target):
-        target_name, board_cell = self._parse_target_selector(target)
-        if board_cell is not None:
-            return self._compute_board_position(target_name, board_cell)
-
         self.img_node.spin_once()
 
-        box, score = self.model.get_best_detection(self.img_node, target_name)
+        box, score = self.model.get_best_detection(self.img_node, target)
         if box is None or score is None:
             self.get_logger().warn("No detection found.")
             return 0.0, 0.0, 0.0
@@ -467,94 +301,6 @@ class ObjectDetectionNode(Node):
             self.get_logger().warn("Depth out of range.")
             return 0.0, 0.0, 0.0
 
-        return self._pixel_to_camera_coords(cx, cy, cz)
-
-    def _parse_target_selector(self, target):
-        """Parse ``class`` or ``class@row,col``/``class@row-col`` selectors."""
-        target = str(target).strip()
-        if '@' not in target:
-            return target, None
-
-        target_name, cell_text = target.rsplit('@', 1)
-        parts = cell_text.replace('-', ',').split(',')
-        if len(parts) != 2:
-            self.get_logger().warn(
-                f"Invalid target selector '{target}'. Use class@row,col."
-            )
-            return target_name.strip(), None
-        try:
-            row, col = (int(part.strip()) for part in parts)
-        except ValueError:
-            self.get_logger().warn(
-                f"Invalid target selector '{target}'. Use class@row,col."
-            )
-            return target_name.strip(), None
-        if not (1 <= row <= GRID_ROWS and 1 <= col <= GRID_COLS):
-            self.get_logger().warn(
-                f"Target board cell out of range: row={row}, col={col}."
-            )
-            return target_name.strip(), None
-        return target_name.strip(), (row - 1, col - 1)
-
-    def get_fresh_color_frame(self, timeout_sec=2.0):
-        self.img_node.color_frame = None
-
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            self.img_node.spin_once(timeout_sec=0.05)
-
-            frame = self.img_node.get_color_frame()
-            if frame is not None:
-                return frame.copy()
-
-        return None
-
-    def _compute_board_position(self, target_name, board_cell):
-        """Select a class instance by its board cell from one camera snapshot."""
-        self.img_node.spin_once()
-        frame = self.img_node.get_color_frame()
-        if frame is None:
-            self.get_logger().warn("No color frame for board-positioned target.")
-            return 0.0, 0.0, 0.0
-
-        frame = frame.copy()
-        aruco_corners = self._detect_aruco_corners(frame)
-        if aruco_corners is not None:
-            homography = self._board_homography(aruco_corners, from_aruco=True)
-        elif self.board_corners is not None:
-            homography = self._board_homography(self.board_corners, from_aruco=False)
-        else:
-            homography = None
-        if homography is None:
-            self.get_logger().warn(
-                "Cannot select a board-positioned target without board references."
-            )
-            return 0.0, 0.0, 0.0
-
-        detections = self.model.get_board_detections(frame)
-        matches = [
-            detection for detection in detections
-            if detection['name'] == target_name
-            and self._pixel_to_board_cell(detection['box'], homography) == board_cell
-        ]
-        if not matches:
-            self.get_logger().warn(
-                f"No '{target_name}' detection found at board cell "
-                f"({board_cell[0] + 1},{board_cell[1] + 1})."
-            )
-            return 0.0, 0.0, 0.0
-
-        detection = max(matches, key=lambda item: item['score'])
-        box = detection['box']
-        cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
-        cz = self._get_depth(cx, cy)
-        if cz is None:
-            self.get_logger().warn("Depth out of range.")
-            return 0.0, 0.0, 0.0
-        self.get_logger().info(
-            f"Selected {target_name} at board cell "
-            f"({board_cell[0] + 1},{board_cell[1] + 1}), score={detection['score']:.3f}"
-        )
         return self._pixel_to_camera_coords(cx, cy, cz)
 
     def _get_depth(self, x, y, win=5):
@@ -598,7 +344,6 @@ def main(args=None):
     try:
         rclpy.spin(node)
     finally:
-        node.img_node.destroy_node()
         node.destroy_node()
         rclpy.shutdown()
 
