@@ -35,7 +35,7 @@ def generate_launch_description():
         executable='realsense2_camera_node',
         namespace='/',
         name='camera',
-        output='screen',
+        # output='screen',
         parameters=[{
             'enable_color': True,
             'enable_depth': True,

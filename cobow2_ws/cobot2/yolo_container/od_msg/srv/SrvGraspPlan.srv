@@ -1,0 +1,25 @@
+# Class or legacy selector. '*' allows any class, but never arbitrary image-centre selection.
+string target
+float64 min_score
+# Controller provides physical target XY and current capture-pose transform.
+bool use_reference
+float64[2] reference_base_xy_mm
+# Row-major 4x4: camera optical -> Base; translation in millimetres.
+float64[16] base_from_camera
+float64 max_target_distance_mm
+float64 ambiguity_margin_mm
+---
+bool success
+string planner
+float64[3] camera_position_mm
+float64 safe_yaw_deg
+float64 grasp_width_mm
+float64 clearance_mm
+float64 score
+string yaw_reference
+string message
+float64 target_width_mm
+float64[3] closing_axis_camera
+float64[3] approach_axis_camera
+string detected_name
+float64 target_distance_mm

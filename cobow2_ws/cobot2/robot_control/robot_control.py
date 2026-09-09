@@ -35,7 +35,6 @@ PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
 TOOLCHARGER_IP = "192.168.1.1"
 TOOLCHARGER_PORT = "502"
-GRIPPER_PREOPEN_RAW = 480
 DEPTH_OFFSET = -35.0
 MIN_DEPTH = 2.0
 
@@ -304,8 +303,28 @@ class RobotController(Node):
 
         return td_coord[:3]
     
+    @staticmethod
+    def _width_to_raw(opening_mm):
+        """Physical inner gap -> RG register command, using measured pairs."""
+        pairs = np.asarray(json.loads(os.getenv('RG2_WIDTH_CALIBRATION', '[]')), float)
+        if pairs.ndim != 2 or pairs.shape[1] != 2 or len(pairs) < 2:
+            raise ValueError('Set RG2_WIDTH_CALIBRATION to at least two [actual_gap_mm, raw] pairs')
+        if (not np.all(np.isfinite(pairs)) or np.any(pairs < 0) or
+                np.any(np.diff(pairs[:,0]) <= 0) or np.any(np.diff(pairs[:,1]) <= 0)):
+            raise ValueError('Width calibration must increase in both actual gap and raw command')
+        if np.any(pairs[:,1] > gripper.max_width):
+            raise ValueError('Calibration exceeds gripper raw command limit')
+        width = float(opening_mm)
+        if not np.isfinite(width) or not pairs[0,0] <= width <= pairs[-1,0]:
+            raise ValueError('Planned opening is outside the measured width calibration range')
+        # Nearest register unit; do not assume raw/10 equals the physical gap.
+        raw = int(round(float(np.interp(width, pairs[:,0], pairs[:,1]))))
+        if not 0 <= raw <= gripper.max_width:
+            raise ValueError('Invalid calibrated gripper command')
+        return raw
+
     def get_grasp_plan(self, target, reference_pos):
-        """Identify the target after camera motion and return its corrected pose."""
+        """Identify the physical target after camera motion and return pose + width."""
         capture_pose = np.asarray(get_current_posx()[0], float)
         hand_eye = np.load(self.gripper2cam_path)
         T = self.get_robot_pose_matrix(*capture_pose) @ hand_eye
@@ -344,12 +363,13 @@ class RobotController(Node):
         rx,ry,rz = self._grasp_yaw_to_base_euler(result.closing_axis_camera, capture_pose)
         # Retain the already configured grasp Z (vision=3 mm). SAM adjusts XY/yaw only.
         pose = [float(base_xyz[0]),float(base_xyz[1]),float(reference_pos[2]),rx,ry,rz]
+        raw = self._width_to_raw(result.grasp_width_mm)
         self.get_logger().info(
             f"Target={result.detected_name}, distance={result.target_distance_mm:.1f}mm, "
-            f"fixed opening command=480, "
+            f"opening={result.grasp_width_mm:.1f}mm -> raw={raw}, "
             f"clearance={result.clearance_mm:.1f}mm"
         )
-        return pose
+        return pose, raw
 
     def _grasp_yaw_to_base_euler(self, closing_axis_camera, robot_posx):
         R = (self.get_robot_pose_matrix(*robot_posx) @ np.load(self.gripper2cam_path))[:3,:3]
@@ -558,24 +578,23 @@ class RobotController(Node):
         self.set_board_sync(True)
 
     def pick_and_place_target(self, target_pos, board_xyz, grasp_selector=None):
-        """Inspect -> rotate/open/align at clearance height -> vertical descent."""
-        if grasp_selector is None:
-            raise ValueError('A class or wildcard plus physical reference is required')
-        if (len(target_pos)!=6 or not np.all(np.isfinite(target_pos))
-                or board_xyz is None or not np.all(np.isfinite(board_xyz))):
-            raise ValueError('Invalid pick/place coordinates')
-        # Opening command is fixed; no width calibration/interpolation needed here.
+        # Validate calibration before moving: one observation (480 -> ~34 mm)
+        # is insufficient to infer a complete physical-width mapping.
+        pairs = json.loads(os.getenv('RG2_WIDTH_CALIBRATION','[]'))
+        if not isinstance(pairs,list) or len(pairs)<2:
+            raise ValueError('Configure RG2_WIDTH_CALIBRATION before robot motion')
+        self._width_to_raw(float(pairs[0][0]))
         self.set_board_sync(False)
         lift_pos = list(target_pos[:2]) + [float(target_pos[2])+PLACE_LIFT,0.0,180.0,0.0]
         movel(lift_pos,vel=VELOCITY,acc=ACC)
         mwait()
         time.sleep(0.2)
-        grasp_pos = self.get_grasp_plan(grasp_selector,target_pos)
+        grasp_pos, raw = self.get_grasp_plan(grasp_selector,target_pos)
         # No fallback descent after a failed or ambiguous plan.
         rotated_hover = lift_pos[:3] + grasp_pos[3:]
         movel(rotated_hover,vel=VELOCITY,acc=ACC)
         mwait()
-        gripper.move_gripper(GRIPPER_PREOPEN_RAW)
+        gripper.move_gripper(raw)
         time.sleep(0.2)
         deadline = time.monotonic()+10.0
         while rclpy.ok() and gripper.get_status()[0]:

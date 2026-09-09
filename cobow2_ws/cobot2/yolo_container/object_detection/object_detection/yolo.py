@@ -44,12 +44,20 @@ class YoloModel:
         return list(frames.values())
 
     def get_best_detection(self, img_node, target):
+        """Detect a target on one fresh frame.
+
+        The old implementation sent every frame collected for one second to
+        YOLO as a single batch.  That needlessly consumed several GB of VRAM
+        and could trigger CUDA OOM when SAM was loaded in the same process.
+        """
         img_node.spin_once()
         frames = self.get_frames(img_node)
         if not frames:
             return None, None
 
-        results = self.model(frames, verbose=False)
+        # Use only the newest frame.  This keeps the coordinates consistent
+        # with the current depth image and prevents a large inference batch.
+        results = self.model(frames[-1], verbose=False)
         print("classes: ")
         print(results[0].names)
         detections = self._aggregate_detections(results)
@@ -68,13 +76,13 @@ class YoloModel:
         return best_det["box"], best_det["score"]
 
     def get_all_detections(self, img_node):
-        """Return the aggregated detections with model class names."""
+        """Return detections from one newest frame with model class names."""
         img_node.spin_once()
         frames = self.get_frames(img_node)
         if not frames:
             return []
 
-        results = self.model(frames, verbose=False)
+        results = self.model(frames[-1], verbose=False)
         detections = self._aggregate_detections(results)
         return [
             {
@@ -110,6 +118,42 @@ class YoloModel:
                     'score': float(score),
                     'label': label,
                     'name': self.model.names[label],
+                })
+        return detections
+
+    def detect_frame(self, frame, confidence_threshold=0.1):
+        """Run YOLO on exactly the RGB frame supplied by the caller.
+
+        The grasp service must use the same image for YOLO boxes and SAM
+        prompts.  Capturing another frame inside this method would shift the
+        boxes relative to the masks and aligned depth image.
+        """
+        if frame is None:
+            return []
+        threshold = float(confidence_threshold)
+        if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError('confidence_threshold must be in [0,1]')
+
+        results = self.model(frame, conf=threshold, verbose=False)
+        detections = []
+        for result in results:
+            if result.boxes is None:
+                continue
+            for box, score, label in zip(
+                result.boxes.xyxy.cpu().numpy(),
+                result.boxes.conf.cpu().numpy(),
+                result.boxes.cls.cpu().numpy(),
+            ):
+                box = np.asarray(box, dtype=np.float32)
+                score = float(score)
+                label = int(label)
+                if score < threshold or not np.all(np.isfinite(box)):
+                    continue
+                detections.append({
+                    'box': box.tolist(),
+                    'score': score,
+                    'label': label,
+                    'name': str(self.model.names[label]),
                 })
         return detections
 
