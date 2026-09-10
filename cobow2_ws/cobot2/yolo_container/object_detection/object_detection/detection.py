@@ -264,7 +264,7 @@ class ObjectDetectionNode(Node):
             if score < min_score:
                 continue
             box = det["box"]
-            cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
+            cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2])
             cz = self._get_depth(cx, cy)
             if cz is None:
                 continue
