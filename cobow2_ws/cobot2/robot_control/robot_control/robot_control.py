@@ -2,6 +2,7 @@ import os
 import time
 import sys
 import json
+import math
 import argparse
 import threading
 from scipy.spatial.transform import Rotation
@@ -12,13 +13,14 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 import DR_init
 
-from od_msg.srv import SrvDepthPosition, SrvAllPositions
+from od_msg.srv import SrvDepthPosition, SrvAllPositions, SrvGraspPlan
 from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from robot_control.onrobot import RG
 from robot_control.aruco_calculator import ArucoCalculator
 from robot_control.janggi_rules import load_rule_engine
+from robot_control.task_json import TaskJsonPublisher, coordinate
 
 package_path = get_package_share_directory("robot_control")
 
@@ -26,16 +28,18 @@ ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 60, 60
 BUCKET_POS = [200.58, -26.07, 56.57]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
-JHOME_POS = [0, -30, 90, 0, 90, 0]
 PLACE_LIFT = 150.0
 PLACE_X_OFFSET = 0.0
 PLACE_Y_OFFSET = -8.0
-PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
 TOOLCHARGER_IP = "192.168.1.1"
 TOOLCHARGER_PORT = "502"
 DEPTH_OFFSET = -35.0
 MIN_DEPTH = 2.0
+GRIPPER_PREOPEN_RAW = 480
+GRASP_HOVER_MM = 200.0
+GRASP_MIN_SCORE = 0.5
+GRIPPER_YAW_OFFSET_DEG = float(os.getenv("GRIPPER_YAW_OFFSET_DEG", "0"))
 
 # after(놓을 자리) 점유 판별용 반경(mm). 장기말은 대략 원형이라, after 위치를
 # 중심으로 이 반경 안에 다른 detection 후보가 있으면 "이미 다른 말이 있다"고 본다.
@@ -89,7 +93,7 @@ dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, trans
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -101,6 +105,9 @@ class RobotController(Node):
     def __init__(self, mode: str = MODE):
         super().__init__("pick_and_place")
         self.mode = mode
+
+        # json 기록용 pulisher. task_json.py 내부에서 JSON 파일을 기록/전송
+        self.task_json = TaskJsonPublisher(self)
         
 
         # MultiThreadedExecutor 하에서 서비스 응답 콜백/타이머 콜백이 서로 블로킹 없이
@@ -109,6 +116,10 @@ class RobotController(Node):
         self.board_sync_client = self.create_client(
             SetBool, "/set_board_sync", callback_group=self.cb_group
         )
+
+        # 안전 회전각을 찾기 위한 grasp plan 서비스.
+        self.get_grasp_plan_client = self.create_client(
+            SrvGraspPlan, "/get_grasp_plan", callback_group=self.cb_group)
 
         self.gripper2cam_path = os.path.join(package_path,"resource","T_gripper2camera.npy")
 
@@ -285,6 +296,8 @@ class RobotController(Node):
         capture_target = None  # after 위치를 미리 점유하고 있는 상대 말(포획 대상)
         abort_move = False
         text_split = None
+        task_started = False
+        task_error = "Vision move rejected"
 
         try:
             result = future.result()
@@ -294,6 +307,9 @@ class RobotController(Node):
                 text_split = result.message.split(' ')
 
                 board_pos_before = f'{text_split[0]},{text_split[2]}'
+                self._record_task('start', before=board_pos_before,
+                    after=f'{text_split[4]},{text_split[6]}' if text_split[-1] == 'release' else None)
+                task_started = True
                 # 이때 get_board_target_pos 내부에서 계산시 z 값은 realsense depth 카메라로 부터 받아서 사용해야 하므로, 필수로 켜줘야 함.
                 #1행 1열 부터 시작하는 텍스트 '(row,colunm)' 형태로 받아서 좌표값 xyz 로 반환. 
                 board_xyz_before = self.get_board_target_pos(board_pos_before)
@@ -327,6 +343,7 @@ class RobotController(Node):
                             board_pos_after = f'{text_split[4]},{text_split[6]}'
                             board_xyz_after = self.get_board_target_pos(board_pos_after)
                             if board_xyz_after is None:
+                                self._publish_vision_status("error : invalid board target")
                                 self.get_logger().warn(f"Invalid board target(after): {board_pos_after}")
                                 abort_move = True
                             else:
@@ -382,9 +399,13 @@ class RobotController(Node):
                 abort_move = True
         except Exception as e:
             self.get_logger().error(f"vision 서비스 응답 처리 실패: {e}")
+            task_error = str(e)
             abort_move = True
 
         if abort_move or board_xyz_before is None or board_xyz_after is None:
+            if task_started:
+                self._record_task('failed', error=task_error)
+            self.isBucket = False
             # 잘못된 착수/파싱 실패 등 - 아무 동작도 수행하지 않고 다음 요청을 받는다.
             with self._vision_lock:
                 self._vision_busy = False
@@ -409,12 +430,89 @@ class RobotController(Node):
             #after 값은 pick_and_place_target() 내부에서 before 처럼 변환 수행하므로 그대로 넣어줌.
             self.pick_and_place_target(board_xyzRyRzRy_before, board_xyz_after)
             self.init_robot()
+            self._record_task("completed" if rclpy.ok() else "failed")
         except Exception as e:
             self.get_logger().error(f"vision 이동 실패: {e}")
+            if task_started:
+                self._record_task("failed", error=str(e))
         finally:
+            self.isBucket = False
             # 이동이 끝난 뒤에야 다음 요청을 허용 (조건 3)
             with self._vision_lock:
                 self._vision_busy = False
+
+
+    def _record_task(self, action, **fields):
+        # [JSON 추가] 기록 오류 처리는 여기서만 하고 로봇 동작으로 전파하지 않는다.
+        try:
+            if action == 'start':
+                for key in ('before', 'after'):
+                    if isinstance(fields.get(key), str):
+                        fields[key] = coordinate(fields[key])
+                self.task_json.start(**fields)
+            else:
+                self.task_json.finish(status=action, **fields)
+        except Exception:
+            self.get_logger().warn('Task JSON 기록 실패')
+
+     # 처음 정한 파지 XYZ는 유지하고, detection에 안전한 회전 방향을 물어봐서 최종 파지 자세를 만드는 함수 이 함수 자체는 로봇을 움직이지 않습니다.
+    def get_grasp_plan(self, target, reference_pos):
+        capture_pose = np.asarray(get_current_posx()[0], float)
+        hand_eye = np.load(self.gripper2cam_path)
+        T = self.get_robot_pose_matrix(*capture_pose) @ hand_eye
+        request = SrvGraspPlan.Request()
+        request.target = str(target).split('@', 1)[0]
+        request.min_score = GRASP_MIN_SCORE
+        request.use_reference = True
+        request.reference_base_xy_mm = [float(v) for v in reference_pos[:2]]
+        request.base_from_camera = T.reshape(-1).tolist()
+        request.max_target_distance_mm = float(os.getenv('GRASP_TARGET_GATE_MM', '15'))
+        request.ambiguity_margin_mm = float(os.getenv('GRASP_TARGET_AMBIGUITY_MM', '5'))
+        future = self.get_grasp_plan_client.call_async(request)
+
+        result = future.result()
+        if result is None or not result.success:raise RuntimeError('Grasp plan failed: '+ (result.message if result else 'no response'))
+        # SAM이 선택한 말이 기존 목표 위치에서 너무 멀지 않은지만 확인
+        if ( not np.isfinite(result.target_distance_mm)or result.target_distance_mm > request.max_target_distance_mm):
+            raise RuntimeError('SAM target outside target gate')
+        # 수직 하강 방향인지 확인
+        approach_base = (T[:3, :3]@ np.asarray(result.approach_axis_camera, dtype=float))
+        if ( not np.all(np.isfinite(approach_base))or not np.allclose(approach_base, [0, 0, -1], atol=0.02)):
+            raise RuntimeError('Planner approach differs from Base vertical')
+        # 충돌 여유 공간이 충분한지 확인
+        if (not np.isfinite(result.clearance_mm)or result.clearance_mm <= 0):
+            raise RuntimeError('Invalid clearance')
+        # 최초 XYZ를 유지하고 회전 방향만 반영한다.
+        rx, ry, rz = self._grasp_yaw_to_base_euler(result.closing_axis_camera,capture_pose)
+        pose = [
+            float(reference_pos[0]),float(reference_pos[1]),float(reference_pos[2]),rx,ry,rz
+            ]
+        self.get_logger().info(
+            f"Target={result.detected_name}, distance={result.target_distance_mm:.1f}mm, "
+            f"fixed opening command=480, "
+            f"clearance={result.clearance_mm:.1f}mm"
+        )
+        return pose
+    
+    # closing_axis_camera(카메라 기준 "닫히는 방향" 벡터)를 캘리브레이션 행렬(gripper2cam)과 현재 로봇 자세로 Base 좌표계로 회전시킨 뒤, 
+    # 그 벡터가 가리키는 방향을 Euler ZYZ 회전으로 변환한다. 
+    # 그리퍼 손가락은 180도 대칭(어느 쪽으로 돌아도 결과가 같음)이므로 두 후보 중 현재 자세에서 덜 도는 쪽을 골라 불필요한 큰 회전을 피함
+    def _grasp_yaw_to_base_euler(self, closing_axis_camera, robot_posx):
+        R = (self.get_robot_pose_matrix(*robot_posx) @ np.load(self.gripper2cam_path))[:3,:3]
+        axis = R @ np.asarray(closing_axis_camera,float)
+        if not np.all(np.isfinite(axis)) or np.linalg.norm(axis[:2]) < 0.9 or abs(axis[2]) > 0.05:
+            raise ValueError('Invalid/non-horizontal closing axis')
+        phi = math.degrees(math.atan2(axis[1],axis[0])) + GRIPPER_YAW_OFFSET_DEG
+        # Explicit ZYZ at beta=180 avoids singular Euler decomposition.
+        # alpha-180 is tool X heading. The fingers have 180-degree symmetry.
+        candidates = [phi-180, phi]
+        current_R = self.get_robot_pose_matrix(*robot_posx)[:3,:3]
+        def rotation_cost(alpha):
+            next_R = self.get_robot_pose_matrix(0,0,0,alpha,180,0)[:3,:3]
+            return -float(np.trace(current_R.T @ next_R))
+        alpha = min(candidates,key=rotation_cost)
+        alpha = (alpha+180)%360-180
+        return float(alpha),180.0,0.0
 
 
     def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
@@ -481,7 +579,6 @@ class RobotController(Node):
         return board_xyz
 
     def robot_control(self):
-        target_list = []
         self.get_logger().info("call get_keyword service")
         self.get_logger().info("say 'Hello Rokey' and speak what you want to pick up")
         get_keyword_future = self.get_keyword_client.call_async(self.get_keyword_request)
@@ -502,16 +599,24 @@ class RobotController(Node):
 
             for i, target in enumerate(tools):
                 dest = dests[i] if i < len(dests) else None
-                self._publish_task(target, dest)
-                board_xyz = self.get_board_target_pos(dest)
-                if board_xyz is None:
-                    self.get_logger().warn(f"Invalid board target: {dest}")
-                    continue
-                target_pos = self.get_target_pos(target)
-                if target_pos is None:
-                    continue
-                self.pick_and_place_target(target_pos, board_xyz)
-                self.init_robot()
+                self._record_task('start', piece=target, after=dest)
+                try:  # 이제 받은 target/dest를 실제로 집고 놓는 동작 수행을 하고 로봇 동작이 끝나면 task_json에 기록한다.
+                    self._publish_task(target, dest)
+                    board_xyz = self.get_board_target_pos(dest)
+                    if board_xyz is None:
+                        self.get_logger().warn(f"Invalid board target: {dest}")
+                        self._record_task("failed", error="Target or destination unavailable")
+                        continue
+                    target_pos = self.get_target_pos(target)
+                    if target_pos is None:
+                        self._record_task("failed", error="Target or destination unavailable")
+                        continue
+                    self.pick_and_place_target(target_pos, board_xyz, grasp_selector=target)
+                    self.init_robot()
+                    self._record_task("completed" if rclpy.ok() else "failed")
+                except Exception as e:
+                    self._record_task('failed', error=str(e))
+                    raise
 
             self._publish_task(None, None)
 
@@ -542,12 +647,9 @@ class RobotController(Node):
             result = get_position_future.result().depth_position.tolist()
             self.get_logger().info(f"Received depth position: {result}")
             if sum(result) == 0:
-                print("No target position")
+                self.get_logger().warn("No target position detected for target '{target}'")
                 return None
 
-            gripper2cam_path = os.path.join(
-                package_path, "resource", "T_gripper2camera.npy"
-            )
             robot_posx = get_current_posx()[0]
             td_coord = self.transform_to_base(result, self.gripper2cam_path, robot_posx)
 
@@ -711,11 +813,18 @@ class RobotController(Node):
 
         self.set_board_sync(True)
 
-    def pick_and_place_target(self, target_pos, board_xyz):
+    def pick_and_place_target(self, target_pos, board_xyz, grasp_selector="*"):
         self.set_board_sync(False)
-
-        lift_pos = target_pos[:2] + [target_pos[2] + PLACE_LIFT] + target_pos[3:]
+        lift_pos = list(target_pos[:2]) + [target_pos[2] + GRASP_HOVER_MM, 0., 180., 0.]
         movel(lift_pos, vel=VELOCITY, acc=ACC)
+        mwait()
+        time.sleep(0.2)
+        target_pos = self.get_grasp_plan(grasp_selector, target_pos)
+        lift_pos = list(target_pos[:2]) + [lift_pos[2]] + target_pos[3:]
+        movel(lift_pos, vel=VELOCITY, acc=ACC)
+        mwait()
+        gripper.move_gripper(GRIPPER_PREOPEN_RAW)
+        time.sleep(0.2)
         movel(target_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.close_gripper()
@@ -776,6 +885,7 @@ def main(args=None):
         pass
     finally:
         executor.shutdown()
+        node._record_task("failed", error="Robot stopped before task completion")
         node.destroy_node()
         rclpy.shutdown()
         executor_thread.join(timeout=1.0)

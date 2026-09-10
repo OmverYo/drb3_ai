@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 import json
 import math
 import os
-
+from ament_index_python.packages import get_package_share_directory
+from ultralytics import SAM
 import cv2
 import numpy as np
 
@@ -10,8 +11,7 @@ import numpy as np
 
 class SamMaskModel:
     def __init__(self, package_name='object_detection'):
-        from ament_index_python.packages import get_package_share_directory
-        from ultralytics import SAM
+
         share = get_package_share_directory(package_name)
         self.model_path = os.getenv('SAM_MODEL_PATH', os.path.join(share, 'resource', 'sam2.1_s.pt'))
         if not os.path.isfile(self.model_path):
@@ -63,7 +63,7 @@ class PlanarSafetyEvaluator:
         self.opening_margin = float(opening_margin_mm)
         self.obstacle_margin = float(obstacle_margin_mm)
 
-    def prepare(self, target, obstacles, observed):
+    def prepare(self, target, obstacles, observed, center_px=None):
         target = np.asarray(target, dtype=bool)
         obstacles = np.asarray(obstacles, dtype=bool)
         observed = np.asarray(observed, dtype=bool)
@@ -254,7 +254,8 @@ class SamGraspPlanner:
             raise ValueError('Nearest piece confidence is below target threshold')
         return index, distance, normal
 
-    def plan(self, depth, depth_scale, intrinsics, masks, target_index, approach_camera=None):
+    def plan(self, depth, depth_scale, intrinsics, masks, target_index, approach_camera=None,
+             base_from_camera=None, reference_base_xy_mm=None):
         result = GraspPlanResult()
         try:
             geometry = self.geometry()
@@ -279,6 +280,12 @@ class SamGraspPlanner:
             d = self._mask_plane_distance(target, z, valid, rays, normal)
             target_xyz = rays[target] * (d / (rays[target] @ normal))[:, None]
             origin = target_xyz.mean(axis=0)
+            # 검사 중심을 실제 하강 XY에 맞춘다. Z는 말의 측정 평면을 사용한다.
+            if reference_base_xy_mm is not None:
+                T = np.asarray(base_from_camera, dtype=float).reshape(4, 4)
+                base = T[:3, :3] @ origin + T[:3, 3]
+                base[:2] = np.asarray(reference_base_xy_mm, dtype=float)
+                origin = T[:3, :3].T @ (base - T[:3, 3])
             radius = float(os.getenv('LOCAL_GRASP_RADIUS_MM', '100'))
             if not np.isfinite(radius) or radius < geometry.max_opening_mm / 2 + geometry.radial + 5 or radius > 300:
                 raise ValueError('LOCAL_GRASP_RADIUS_MM must fit the gripper and be <= 300')
