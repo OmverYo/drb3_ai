@@ -55,6 +55,13 @@ BEFORE_PICK_MATCH_RADIUS_MM = 17.5
 # get_command 서비스를 폴링한다.
 VISION_POLL_PERIOD_SEC = 0.2
 
+# _on_vision_response 안에서 발생하는, 위치 관련 "과정적" 메시지(감지된 장기말 없음/
+# 좌표 해석 불가/규칙 위반/잘못된 착수/상대 기물 포획)를 별도 alert 창이 아니라
+# get_command.py가 띄우는 webcam 화면에 잠깐 표시하기 위한 지속 시간(초).
+# (결론적 메시지인 "vision 이동 실패" 등에는 적용하지 않는다.)
+VISION_STATUS_DISPLAY_SEC = 2.0
+VISION_STATUS_TOPIC = "/ui/vision_status"
+
 # --- 실행 모드 ---
 # voice(기본): get_keyword(음성) + get_position(depth) 서비스로 pick-and-place 실행.
 # vision: get_command(손동작) 서비스만 폴링(음성/깊이 서비스는 사용하지 않음).
@@ -167,6 +174,13 @@ class RobotController(Node):
             self.get_logger().info("Waiting for get_all_positions service...")
         self.get_all_positions_request = SrvAllPositions.Request()
 
+        # _on_vision_response의 위치 관련 과정적 메시지(감지된 장기말 없음/좌표 해석
+        # 불가/규칙 위반/잘못된 착수/상대 기물 포획)를 get_command.py의 webcam 화면에
+        # 잠깐 띄우기 위한 퍼블리셔. 로봇 동작에는 영향을 주지 않는 UI 전용 채널이다.
+        self.vision_status_pub = self.create_publisher(
+            String, VISION_STATUS_TOPIC, 10
+        )
+
         # 조건 3: 요청 전송~응답 처리(z축 bump 이동 포함) 동안 True.
         # 다음 요청은 이 플래그가 False로 돌아온 뒤에만 나간다.
         self._vision_busy = False
@@ -197,6 +211,18 @@ class RobotController(Node):
             self.ui_pub.publish(String(data=json.dumps({"alert": message})))
         except Exception as e:
             self.get_logger().warn(f"_publish_alert failed (non-critical): {e}")
+
+    def _publish_vision_status(self, message, duration_sec=VISION_STATUS_DISPLAY_SEC):
+        """_on_vision_response의 위치 관련 과정적 메시지를 get_command.py(webcam 화면)
+        쪽으로 보내, 그 화면에 duration_sec 동안만 잠깐 표시되도록 한다.
+        (결론적 실패 메시지인 "vision 이동 실패" 등에는 사용하지 않는다.)
+        """
+        try:
+            self.vision_status_pub.publish(
+                String(data=json.dumps({"message": message, "duration": duration_sec}))
+            )
+        except Exception as e:
+            self.get_logger().warn(f"_publish_vision_status failed (non-critical): {e}")
 
     def _wait_for_future(self, future, timeout_sec=None):
         """MultiThreadedExecutor가 별도 스레드에서 이미 spin 중이므로,
@@ -287,13 +313,7 @@ class RobotController(Node):
                     )
 
                     if board_xyz_before is None:
-                        msg = (
-                            f"선택한 위치({board_pos_before}) 반경 "
-                            f"{BEFORE_PICK_MATCH_RADIUS_MM}mm 이내에 감지된 장기말이 없습니다. "
-                            "빈 칸을 선택한 것으로 판단해 이동을 취소합니다."
-                        )
-                        self.get_logger().error(msg)
-                        self._publish_alert(msg)
+                        self._publish_vision_status("error : no piece detected")
                         abort_move = True
                     else:
                         board_xyz_before[0] = board_xyz_before[0] #+ PLACE_X_OFFSET
@@ -318,9 +338,7 @@ class RobotController(Node):
                                 before_parsed = self.parse_board_destination(board_pos_before)
                                 after_parsed = self.parse_board_destination(board_pos_after)
                                 if before_parsed is None or after_parsed is None:
-                                    msg = "장기 규칙 검사 실패: 좌표를 해석할 수 없습니다."
-                                    self.get_logger().error(msg)
-                                    self._publish_alert(msg)
+                                    self._publish_vision_status("error : recognition failure")
                                     abort_move = True
                                 else:
                                     before_rc = before_parsed[2:4]
@@ -330,9 +348,7 @@ class RobotController(Node):
                                         before_name, before_rc, after_rc, occupancy_grid
                                     )
                                     if not move_result.ok:
-                                        msg = f"룰 위반으로 이동을 취소합니다: {move_result.reason}"
-                                        self.get_logger().error(msg)
-                                        self._publish_alert(msg)
+                                        self._publish_vision_status("error : rule violation")
                                         abort_move = True
 
                             if abort_move:
@@ -347,18 +363,10 @@ class RobotController(Node):
                                     )
                                     occupant_team = occupant['name'].rsplit('_', 1)[-1]
                                     if before_team is not None and occupant_team == before_team:
-                                        msg = (
-                                            f"잘못된 착수: after 위치에 같은 편 기물"
-                                            f"({occupant['name']})이 이미 있습니다. 이동을 취소합니다."
-                                        )
-                                        self.get_logger().error(msg)
-                                        self._publish_alert(msg)
+                                        self._publish_vision_status("error : invalid move")
                                         abort_move = True
                                     else:
-                                        self.get_logger().info(
-                                            f"상대 기물 포획: {occupant['name']}을(를) bucket으로 "
-                                            f"옮긴 뒤 before->after 이동을 진행합니다."
-                                        )
+                                        self._publish_vision_status("info : capture piece")
                                         capture_target = occupant
                         elif text_split[-1] == 'bucket':
                             self.isBucket = True

@@ -21,6 +21,7 @@ class WebcamViewer:
         display_frame = frame.copy()
         self._draw_input_status_overlay(display_frame, status)
         self._draw_status_overlay(display_frame, status)
+        self._draw_vision_status_overlay(display_frame, status)
         cv2.imshow(self.window_name, display_frame)
         key = cv2.waitKey(1) & 0xFF
         return key == ord("q")
@@ -91,6 +92,36 @@ class WebcamViewer:
         cv2.putText(
             frame, text, (10, h - 12),
             cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
+        )
+
+    def _draw_vision_status_overlay(self, frame, status: dict):
+        """robot_control.py의 _on_vision_response에서 보내온, 위치 관련 과정적 메시지
+        (감지된 장기말 없음 / 좌표 해석 불가 / 규칙 위반 / 잘못된 착수 / 상대 기물 포획)를
+        화면 중앙에 잠깐 띄운다.
+
+        get_command.py는 robot_control.py가 지정한 시간(기본 2초) 동안만
+        status['vision_status']를 채워서 넘겨준다. 만료되면 None/빈 값이 오므로
+        그때는 아무것도 그리지 않는다. "vision 이동 실패"처럼 결론적인 메시지는
+        이 경로로 오지 않는다(로그로만 남는다).
+        """
+        text = status.get("vision_status")
+        if not text:
+            return
+
+        h, w = frame.shape[:2]
+        color = (0, 128, 255)  # 주황 — 로봇 동작에는 영향 없는 과정 알림
+
+        box_height = 40
+        y0 = h // 2 - box_height // 2
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, y0), (w, y0 + box_height), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        x = max(10, (w - text_w) // 2)
+        cv2.putText(
+            frame, text, (x, y0 + box_height - 12),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA,
         )
 
     def close(self):
