@@ -1,8 +1,0 @@
-task: detect
-mode: train
-model: yolov8n.yaml
-data: data.yaml
-epochs: 100
-imgsz: 640
-batch: 16
-

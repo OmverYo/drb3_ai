@@ -5,5 +5,3 @@
 db_config.py
 .env
 __pycache__/
-
-corecode
