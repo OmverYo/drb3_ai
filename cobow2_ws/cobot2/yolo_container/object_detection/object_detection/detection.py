@@ -396,11 +396,6 @@ class ObjectDetectionNode(Node):
         response.closing_axis_camera = plan.closing_axis_camera
         response.approach_axis_camera = plan.approach_axis_camera
         response.message = plan.message
-        self.get_logger().info(
-            f"grasp plan: success={plan.success}, planner={plan.planner}, "
-            f"yaw={plan.safe_yaw_deg:.1f} deg, width={plan.grasp_width_mm:.1f} mm, "
-            f"clearance={plan.clearance_mm:.1f} mm"
-        )
         return response
 
     @staticmethod
@@ -554,8 +549,10 @@ def main(args=None):
     try:
         rclpy.spin(node)
     finally:
+        node.img_node.destroy_node()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

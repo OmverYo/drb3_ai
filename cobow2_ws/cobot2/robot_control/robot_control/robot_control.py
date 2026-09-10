@@ -103,6 +103,10 @@ except ImportError as e:
 gripper = RG(GRIPPER_NAME, TOOLCHARGER_IP, TOOLCHARGER_PORT)
 
 
+class GraspPlanError(RuntimeError):
+    """The planner rejected the grasp before the robot started descending."""
+
+
 class RobotController(Node):
     def __init__(self, mode: str = MODE):
         super().__init__("pick_and_place")
@@ -133,7 +137,6 @@ class RobotController(Node):
         # 장기 규칙(이동 제한) 엔진. 규칙은 janggi_move_rules.yaml 에서 관리하며,
         # JANGGI_RULES_PATH 환경변수로 경로를 override 할 수 있다(load_rule_engine 참고).
         self.rule_engine = load_rule_engine()
-        self.get_logger().info("JanggiRuleEngine initialized")
         # (row0, col0) -> BASE xyz 캐시. 보드/궁성은 고정되어 있으므로 최초 1회만 계산.
         self._cell_position_cache = None
 
@@ -391,8 +394,6 @@ class RobotController(Node):
                             )
                             abort_move = True
             else:
-                reason = result.message if result is not None else "no_response"
-                self.get_logger().info(f"vision service 응답 실패/대기중: {reason}")
                 abort_move = True
         except Exception as e:
             self.get_logger().error(f"vision 서비스 응답 처리 실패: {e}")
@@ -466,26 +467,26 @@ class RobotController(Node):
         request.max_target_distance_mm = float(os.getenv('GRASP_TARGET_GATE_MM', '15'))
         request.ambiguity_margin_mm = float(os.getenv('GRASP_TARGET_AMBIGUITY_MM', '5'))
         if not self.get_grasp_plan_client.wait_for_service(timeout_sec=3.0):
-            raise RuntimeError('/get_grasp_plan unavailable; no descent')
+            raise GraspPlanError('/get_grasp_plan unavailable; no descent')
         future = self.get_grasp_plan_client.call_async(request)
         if not self._wait_for_future(future, timeout_sec=20.0) or not rclpy.ok():
             future.cancel()
-            raise RuntimeError('Grasp plan timed out; no descent')
+            raise GraspPlanError('Grasp plan timed out; no descent')
         result = future.result()
         if result is None or not result.success:
-            raise RuntimeError(
+            raise GraspPlanError(
                 'Grasp plan failed: ' + (result.message if result else 'no response')
             )
         # SAM이 선택한 말이 기존 목표 위치에서 너무 멀지 않은지만 확인
         if ( not np.isfinite(result.target_distance_mm)or result.target_distance_mm > request.max_target_distance_mm):
-            raise RuntimeError('SAM target outside target gate')
+            raise GraspPlanError('SAM target outside target gate')
         # 수직 하강 방향인지 확인
         approach_base = (T[:3, :3]@ np.asarray(result.approach_axis_camera, dtype=float))
         if ( not np.all(np.isfinite(approach_base))or not np.allclose(approach_base, [0, 0, -1], atol=0.02)):
-            raise RuntimeError('Planner approach differs from Base vertical')
+            raise GraspPlanError('Planner approach differs from Base vertical')
         # 수직 하강 방향인지 확인
         if (not np.isfinite(result.clearance_mm)or result.clearance_mm <= 0):
-            raise RuntimeError('Invalid clearance')
+            raise GraspPlanError('Invalid clearance')
         # 최초 XYZ를 유지하고 회전 방향만 반영한다.
         rx, ry, rz = self._grasp_yaw_to_base_euler(result.closing_axis_camera,capture_pose)
         pose = [
@@ -614,6 +615,10 @@ class RobotController(Node):
                     self.pick_and_place_target(target_pos, board_xyz, grasp_selector=target)
                     self.init_robot()
                     self._record_task("completed" if rclpy.ok() else "failed")
+                except GraspPlanError as e:
+                    self._record_task('failed', error=str(e))
+                    self.get_logger().warn(str(e))
+                    continue
                 except Exception as e:
                     self._record_task('failed', error=str(e))
                     raise
@@ -735,10 +740,6 @@ class RobotController(Node):
             )
             return reference_xyz, None
 
-        self.get_logger().info(
-            f"board_xyz_before 보정: 아루코={list(ref)} -> detection={list(best['pos'])} "
-            f"(class={best['name']}, dist={best_dist:.2f}mm)"
-        )
         return list(best["pos"]), best["name"]
 
     def find_piece_at(self, position, radius=PIECE_MATCH_RADIUS_MM):
@@ -817,7 +818,13 @@ class RobotController(Node):
         movel(lift_pos, vel=VELOCITY, acc=ACC)
         mwait()
         time.sleep(0.2)
-        target_pos = self.get_grasp_plan(grasp_selector, target_pos)
+        try:
+            target_pos = self.get_grasp_plan(grasp_selector, target_pos)
+        except GraspPlanError:
+            # Planning is performed at the 200 mm hover pose. Return home and
+            # resume board sync without ever descending toward the piece.
+            self.init_robot()
+            raise
         lift_pos = list(target_pos[:2]) + [lift_pos[2]] + target_pos[3:]
         movel(lift_pos, vel=VELOCITY, acc=ACC)
         mwait()
@@ -888,10 +895,12 @@ def main(args=None):
         pass
     finally:
         executor.shutdown()
+        executor_thread.join(timeout=2.0)
         node._record_task("failed", error="Robot stopped before task completion")
         node.destroy_node()
-        rclpy.shutdown()
-        executor_thread.join(timeout=1.0)
+        dsr_node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

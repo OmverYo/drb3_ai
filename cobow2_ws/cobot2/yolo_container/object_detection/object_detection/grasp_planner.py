@@ -53,9 +53,9 @@ class PlanarPlan:
     finger_polygons: list
 
 class PlanarSafetyEvaluator:
-    def __init__(self, scale=2.0, max_opening_mm=100.0,
-                 finger_radial_mm=12.0, finger_tangent_mm=4.0,
-                 opening_margin_mm=1.0, obstacle_margin_mm=1.0,
+    def __init__(self, scale=2.0, max_opening_mm=48.0,
+                 finger_radial_mm=0.0, finger_tangent_mm=12.0,
+                 opening_margin_mm=2.0, obstacle_margin_mm=2.0,
                  fixed_opening_mm=48.0):
         self.scale = float(scale)
         self.max_opening_mm = float(max_opening_mm)
@@ -177,11 +177,11 @@ class SamGraspPlanner:
     def geometry():
         return PlanarSafetyEvaluator(
             scale=float(os.getenv('GRASP_MAP_PX_PER_MM', '2')),
-            max_opening_mm=float(os.getenv('RG2_MAX_OPENING_MM', '100')),
-            finger_radial_mm=float(os.getenv('RG2_FINGER_RADIAL_MM', '12')),
-            finger_tangent_mm=float(os.getenv('RG2_FINGER_TANGENT_MM', '4')),
-            opening_margin_mm=float(os.getenv('RG2_OPENING_MARGIN_MM', '1')),
-            obstacle_margin_mm=float(os.getenv('RG2_OBSTACLE_MARGIN_MM', '1')),
+            max_opening_mm=float(os.getenv('RG2_MAX_OPENING_MM', '48')),
+            finger_radial_mm=float(os.getenv('RG2_FINGER_RADIAL_MM', '0')),
+            finger_tangent_mm=float(os.getenv('RG2_FINGER_TANGENT_MM', '12')),
+            opening_margin_mm=float(os.getenv('RG2_OPENING_MARGIN_MM', '2')),
+            obstacle_margin_mm=float(os.getenv('RG2_OBSTACLE_MARGIN_MM', '2')),
             fixed_opening_mm=float(os.getenv('RG2_FIXED_OPENING_MM', '48')),
         )
 
@@ -203,16 +203,27 @@ class SamGraspPlanner:
 
     @staticmethod
     def _mask_plane_distance(mask, z_mm, valid, rays, normal):
-        core = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        mask_u8 = mask.astype(np.uint8)
+        interior = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 5)
+        peak = float(interior.max())
+        if peak < 1.0:
+            raise ValueError('SAM mask has no usable interior')
+        # RealSense depth at a silhouette contains foreground/background mixing.
+        # Use only the central part of the piece and reject isolated depth outliers.
+        core = interior >= max(2.0, peak * 0.35)
         count = np.count_nonzero(core)
         usable = core & valid
-        if count < 20 or np.count_nonzero(usable) < max(20, 0.7 * count):
+        if count < 20 or np.count_nonzero(usable) < max(20, 0.5 * count):
             raise ValueError('Insufficient valid depth inside a SAM mask')
         distances = z_mm[usable] * (rays[usable] @ normal)
-        distance = float(np.median(distances))
-        if np.percentile(np.abs(distances - distance), 90) > 5.0:
-            raise ValueError('Mask depth is inconsistent with a flat piece; reacquire RGB-D')
-        return distance
+        median = float(np.median(distances))
+        deviation = np.abs(distances - median)
+        mad = float(np.median(deviation))
+        tolerance = max(3.0, 4.5 * 1.4826 * mad)
+        inliers = distances[deviation <= tolerance]
+        if len(inliers) < 20:
+            raise ValueError('Insufficient consistent depth inside a SAM mask')
+        return float(np.median(inliers))
 
     @staticmethod
     def select_target_by_base_xy(detections, masks, depth, depth_scale, intrinsics,
@@ -248,7 +259,14 @@ class SamGraspPlanner:
             if mask is None or np.shape(mask) != z.shape:
                 raise ValueError('Invalid instance mask')
             mask = np.asarray(mask,bool)
-            distance = SamGraspPlanner._mask_plane_distance(mask,z,valid,rays,normal)
+            try:
+                distance = SamGraspPlanner._mask_plane_distance(
+                    mask, z, valid, rays, normal
+                )
+            except ValueError:
+                # A bad depth patch on an unrelated detection must not reject
+                # a valid target near the requested Base XY.
+                continue
             cloud = rays[mask] * (distance / (rays[mask] @ normal))[:,None]
             center = cloud.mean(axis=0)
             base = R @ center + T[:3,3]
@@ -261,8 +279,6 @@ class SamGraspPlanner:
             raise ValueError('Ambiguous target: two pieces near the reference Base XY')
         distance,index = candidates[0]
         selected = detections[index]
-        if target_name not in (None,'','*') and selected['name'] != target_name:
-            raise ValueError('Nearest piece class differs from the voice target')
         if selected['score'] < min_score:
             raise ValueError('Nearest piece confidence is below target threshold')
         return index, distance, normal
@@ -323,7 +339,12 @@ class SamGraspPlanner:
             for i, mask in enumerate(masks):
                 if i == target_index:
                     continue
-                distance = self._mask_plane_distance(mask, z, valid, rays, normal)
+                try:
+                    distance = self._mask_plane_distance(mask, z, valid, rays, normal)
+                except ValueError:
+                    # All pieces stand on the same board.  Keeping the mask at
+                    # the target plane is safer than dropping this obstacle.
+                    distance = d
                 obstacles |= warp(mask, distance)
             raster_center = np.array([radius * geometry.scale] * 2, dtype=float)
             prepared = geometry.prepare(
