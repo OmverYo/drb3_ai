@@ -54,14 +54,20 @@ class PlanarPlan:
 
 class PlanarSafetyEvaluator:
     def __init__(self, scale=2.0, max_opening_mm=100.0,
-                 finger_radial_mm=12.0, finger_tangent_mm=14.0,
-                 opening_margin_mm=1.0, obstacle_margin_mm=1.0):
+                 finger_radial_mm=12.0, finger_tangent_mm=4.0,
+                 opening_margin_mm=1.0, obstacle_margin_mm=1.0,
+                 fixed_opening_mm=48.0):
         self.scale = float(scale)
         self.max_opening_mm = float(max_opening_mm)
         self.radial = float(finger_radial_mm)
         self.tangent = float(finger_tangent_mm)
         self.opening_margin = float(opening_margin_mm)
         self.obstacle_margin = float(obstacle_margin_mm)
+        self.fixed_opening = float(fixed_opening_mm)
+        if self.scale <= 0:
+            raise ValueError('GRASP_MAP_PX_PER_MM must be positive')
+        if not 0 < self.fixed_opening <= self.max_opening_mm:
+            raise ValueError('RG2_FIXED_OPENING_MM must be within the gripper range')
 
     def prepare(self, target, obstacles, observed, center_px=None):
         target = np.asarray(target, dtype=bool)
@@ -74,7 +80,12 @@ class PlanarSafetyEvaluator:
         if np.any(target & obstacles):
             raise ValueError('Target and neighbor masks overlap; segmentation is ambiguous')
         yy, xx = np.nonzero(target)
-        center_px = np.array([xx.mean(), yy.mean()])
+        if center_px is None:
+            center_px = np.array([xx.mean(), yy.mean()], dtype=float)
+        else:
+            center_px = np.asarray(center_px, dtype=float)
+            if center_px.shape != (2,) or not np.all(np.isfinite(center_px)):
+                raise ValueError('Invalid grasp centre')
         points = (np.column_stack((xx, yy)) - center_px) / self.scale
         # Outside the camera view and missing depth are unknown, never free.
         occupied = (obstacles | ~observed).astype(np.uint8)
@@ -100,8 +111,9 @@ class PlanarSafetyEvaluator:
         # twice the larger extent prevents a finger from landing on the piece.
         pixel_guard = math.sqrt(2) / self.scale
         contact_half = max(abs(lo), abs(hi)) + pixel_guard
-        opening = 2 * (contact_half + self.opening_margin)
-        if opening > self.max_opening_mm:
+        required_opening = 2 * (contact_half + self.opening_margin)
+        opening = self.fixed_opening
+        if required_opening > opening:
             return None
         # Include inward closing travel down to the smaller contact extent.
         close_half = max(0.0, min(abs(lo), abs(hi)) - pixel_guard)
@@ -170,6 +182,7 @@ class SamGraspPlanner:
             finger_tangent_mm=float(os.getenv('RG2_FINGER_TANGENT_MM', '4')),
             opening_margin_mm=float(os.getenv('RG2_OPENING_MARGIN_MM', '1')),
             obstacle_margin_mm=float(os.getenv('RG2_OBSTACLE_MARGIN_MM', '1')),
+            fixed_opening_mm=float(os.getenv('RG2_FIXED_OPENING_MM', '48')),
         )
 
     @staticmethod
@@ -312,7 +325,10 @@ class SamGraspPlanner:
                     continue
                 distance = self._mask_plane_distance(mask, z, valid, rays, normal)
                 obstacles |= warp(mask, distance)
-            prepared = geometry.prepare(target_metric, obstacles, observed)
+            raster_center = np.array([radius * geometry.scale] * 2, dtype=float)
+            prepared = geometry.prepare(
+                target_metric, obstacles, observed, center_px=raster_center
+            )
             plan = geometry.search(prepared)
             if plan is None:
                 raise ValueError('No visible collision-free direction in 0..179 degrees')

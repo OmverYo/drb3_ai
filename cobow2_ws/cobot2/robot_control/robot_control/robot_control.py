@@ -28,9 +28,11 @@ ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 VELOCITY, ACC = 60, 60
 BUCKET_POS = [200.58, -26.07, 56.57]#[4.00, 38.00, 64.00, -0.1, 78.0, 4]
+JHOME_POS = [0, -30, 90, 0, 90, 0]
 PLACE_LIFT = 150.0
 PLACE_X_OFFSET = 0.0
 PLACE_Y_OFFSET = -8.0
+PLACE_Z_OFFSET = -25.0
 GRIPPER_NAME = "rg2"
 TOOLCHARGER_IP = "192.168.1.1"
 TOOLCHARGER_PORT = "502"
@@ -93,7 +95,7 @@ dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
 DR_init.__dsr__node = dsr_node
 
 try:
-    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait
+    from DSR_ROBOT2 import movej, movel, get_current_posx, mwait, trans
 except ImportError as e:
     print(f"Error importing DSR_ROBOT2: {e}")
     sys.exit()
@@ -128,8 +130,6 @@ class RobotController(Node):
             t_gripper_camera_path=self.gripper2cam_path,
             )
 
-        self.get_logger().info("ArucoCalculator initialized")
-
         # 장기 규칙(이동 제한) 엔진. 규칙은 janggi_move_rules.yaml 에서 관리하며,
         # JANGGI_RULES_PATH 환경변수로 경로를 override 할 수 있다(load_rule_engine 참고).
         self.rule_engine = load_rule_engine()
@@ -156,14 +156,14 @@ class RobotController(Node):
             SrvDepthPosition, "/get_3d_position", callback_group=self.cb_group
         )
         while not self.get_position_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info("Waiting for get_depth_position service...")
+            pass
         self.get_position_request = SrvDepthPosition.Request()
 
         self.get_keyword_client = self.create_client(
             Trigger, "/get_keyword", callback_group=self.cb_group
         )
         while not self.get_keyword_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info("Waiting for get_keyword service...")
+            pass
         self.get_keyword_request = Trigger.Request()
 
     def _init_vision_service(self):
@@ -172,7 +172,7 @@ class RobotController(Node):
             Trigger, "get_command", callback_group=self.cb_group
         )
         while not self.vision_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info("Waiting for get_command (vision) service...")
+            pass
         self.vision_request = Trigger.Request()
 
         # 아루코로 계산한 board_xyz_before(집는 위치)를 실제 detection 결과로
@@ -182,7 +182,7 @@ class RobotController(Node):
             SrvAllPositions, "/get_all_positions", callback_group=self.cb_group
         )
         while not self.get_all_positions_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info("Waiting for get_all_positions service...")
+            pass
         self.get_all_positions_request = SrvAllPositions.Request()
 
         # _on_vision_response의 위치 관련 과정적 메시지(감지된 장기말 없음/좌표 해석
@@ -263,8 +263,6 @@ class RobotController(Node):
         if response is None or not response.success:
             raise RuntimeError('현황판 상태 변경 실패')
 
-        self.get_logger().info(f"현황판 상태 변경: {'활성화' if enable else '비활성화'}")
-
     # ------------------------------------------------------------------
     # 비전 서비스(get_command) 폴링
     # ------------------------------------------------------------------
@@ -302,7 +300,6 @@ class RobotController(Node):
         try:
             result = future.result()
             if result is not None and result.success:
-                self.get_logger().info(f"vision command: {result.message}")
                 # result.message example: "1 , 3 grap 3 , 4 release"
                 text_split = result.message.split(' ')
 
@@ -404,7 +401,7 @@ class RobotController(Node):
 
         if abort_move or board_xyz_before is None or board_xyz_after is None:
             if task_started:
-                self._record_task('failed', error=task_error)
+                self._record_task('failed', error=locals().get('msg', task_error))
             self.isBucket = False
             # 잘못된 착수/파싱 실패 등 - 아무 동작도 수행하지 않고 다음 요청을 받는다.
             with self._vision_lock:
@@ -468,10 +465,17 @@ class RobotController(Node):
         request.base_from_camera = T.reshape(-1).tolist()
         request.max_target_distance_mm = float(os.getenv('GRASP_TARGET_GATE_MM', '15'))
         request.ambiguity_margin_mm = float(os.getenv('GRASP_TARGET_AMBIGUITY_MM', '5'))
+        if not self.get_grasp_plan_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError('/get_grasp_plan unavailable; no descent')
         future = self.get_grasp_plan_client.call_async(request)
-
+        if not self._wait_for_future(future, timeout_sec=20.0) or not rclpy.ok():
+            future.cancel()
+            raise RuntimeError('Grasp plan timed out; no descent')
         result = future.result()
-        if result is None or not result.success:raise RuntimeError('Grasp plan failed: '+ (result.message if result else 'no response'))
+        if result is None or not result.success:
+            raise RuntimeError(
+                'Grasp plan failed: ' + (result.message if result else 'no response')
+            )
         # SAM이 선택한 말이 기존 목표 위치에서 너무 멀지 않은지만 확인
         if ( not np.isfinite(result.target_distance_mm)or result.target_distance_mm > request.max_target_distance_mm):
             raise RuntimeError('SAM target outside target gate')
@@ -479,18 +483,17 @@ class RobotController(Node):
         approach_base = (T[:3, :3]@ np.asarray(result.approach_axis_camera, dtype=float))
         if ( not np.all(np.isfinite(approach_base))or not np.allclose(approach_base, [0, 0, -1], atol=0.02)):
             raise RuntimeError('Planner approach differs from Base vertical')
-        # 충돌 여유 공간이 충분한지 확인
+        # 수직 하강 방향인지 확인
         if (not np.isfinite(result.clearance_mm)or result.clearance_mm <= 0):
             raise RuntimeError('Invalid clearance')
         # 최초 XYZ를 유지하고 회전 방향만 반영한다.
         rx, ry, rz = self._grasp_yaw_to_base_euler(result.closing_axis_camera,capture_pose)
         pose = [
             float(reference_pos[0]),float(reference_pos[1]),float(reference_pos[2]),rx,ry,rz
-            ]
+        ]
         self.get_logger().info(
-            f"Target={result.detected_name}, distance={result.target_distance_mm:.1f}mm, "
-            f"fixed opening command=480, "
-            f"clearance={result.clearance_mm:.1f}mm"
+            f"Grasp ready: target={result.detected_name}, "
+            f"yaw={result.safe_yaw_deg:.1f}deg, clearance={result.clearance_mm:.1f}mm"
         )
         return pose
     
@@ -568,18 +571,15 @@ class RobotController(Node):
             return None
         (row_user,col_user,row0,col0) = parsed
 
-        self.get_logger().info(f"Board coordinate: user=({row_user},{col_user}) -> internal=({row0},{col0})")
         board_xyz = self.aruco_calculator.get_base_point(row0,col0)
 
         if board_xyz is None:
             self.get_logger().warn("Aruco board BASE coordinate calculation failed")
             return None
 
-        self.get_logger().info(f"Board {row_user}행 {col_user}열 BASE XYZ = {board_xyz}")
         return board_xyz
 
     def robot_control(self):
-        self.get_logger().info("call get_keyword service")
         self.get_logger().info("say 'Hello Rokey' and speak what you want to pick up")
         get_keyword_future = self.get_keyword_client.call_async(self.get_keyword_request)
         self._wait_for_future(get_keyword_future, timeout_sec=60.0)
@@ -635,7 +635,6 @@ class RobotController(Node):
     def get_target_pos(self, target):
         target_pos = None
         self.get_position_request.target = target
-        self.get_logger().info("call depth position service with object_detection node")
         get_position_future = self.get_position_client.call_async(
             self.get_position_request
         )
@@ -645,9 +644,8 @@ class RobotController(Node):
 
         if get_position_future.result():
             result = get_position_future.result().depth_position.tolist()
-            self.get_logger().info(f"Received depth position: {result}")
             if sum(result) == 0:
-                self.get_logger().warn("No target position detected for target '{target}'")
+                self.get_logger().warn("No target position")
                 return None
 
             robot_posx = get_current_posx()[0]
@@ -824,7 +822,14 @@ class RobotController(Node):
         movel(lift_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.move_gripper(GRIPPER_PREOPEN_RAW)
-        time.sleep(0.2)
+        # 그리퍼 열림 상태가 되기까지 최대 10초 기다린다. (그리퍼가 이미 열려있으면 바로 다음 단계로 넘어간다)
+        deadline = time.monotonic() + 10.0
+        while rclpy.ok() and gripper.get_status()[0]:
+            if time.monotonic() > deadline:
+                raise RuntimeError('Gripper opening timed out; no descent')
+            time.sleep(0.05)
+        if not rclpy.ok():
+            raise RuntimeError('ROS shutdown requested; no descent')
         movel(target_pos, vel=VELOCITY, acc=ACC)
         mwait()
         gripper.close_gripper()
@@ -842,8 +847,6 @@ class RobotController(Node):
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), BUCKET_POS[2], ] + target_pos[3:]
         else :
             place_pos = [float(board_xyz[0] + PLACE_X_OFFSET),float(board_xyz[1] + PLACE_Y_OFFSET), 4, ] + target_pos[3:]
-        self.get_logger().info(f"Janggi place position: {place_pos}")
-
         movel(hover_pos, vel=VELOCITY, acc=ACC)
         mwait()
 

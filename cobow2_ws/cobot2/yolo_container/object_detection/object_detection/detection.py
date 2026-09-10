@@ -19,6 +19,8 @@ from object_detection.aruco import (
 
 
 PACKAGE_NAME = 'object_detection'
+PACKAGE_PATH = get_package_share_directory(PACKAGE_NAME)
+
 
 class ObjectDetectionNode(Node):
     def __init__(self, model_name = 'yolo'):
@@ -65,11 +67,6 @@ class ObjectDetectionNode(Node):
             self.handle_set_board_sync
         )
         self.board_timer = self.create_timer(sync_interval, self._sync_board)
-        self.get_logger().info("ObjectDetectionNode initialized.")
-        self.get_logger().info(
-            "Board mapping: ArucoCalculator reference corners; "
-            "350x350 mm board, 30 mm outward X gaps; same-frame YOLO."
-        )
 
     def _load_model(self, name):
         if name.lower() == 'yolo':
@@ -154,7 +151,6 @@ class ObjectDetectionNode(Node):
         response.message = (
             "Board sync enabled." if self.board_sync_enabled else "Board sync disabled."
         )
-        self.get_logger().info(response.message)
         return response
 
     def _sync_board(self):
@@ -250,9 +246,6 @@ class ObjectDetectionNode(Node):
             self.get_logger().warn(f"Could not update board API: {error}")
 
     def handle_get_all_positions(self, request, response):
-        self.get_logger().info(
-            f"Received get_all_positions request (min_score={request.min_score})"
-        )
         xs, ys, zs, scores, names = self._compute_all_positions(min_score=request.min_score)
         response.x = xs
         response.y = ys
@@ -288,7 +281,6 @@ class ObjectDetectionNode(Node):
         return xs, ys, zs, scores, names
 
     def handle_get_depth(self, request, response):
-        self.get_logger().info(f"Received request: {request}")
         coords = self._compute_position(request.target)
         response.depth_position = [float(x) for x in coords]
         return response
@@ -446,7 +438,6 @@ class ObjectDetectionNode(Node):
             self.get_logger().warn("No detection found.")
             return 0.0, 0.0, 0.0
         
-        self.get_logger().info(f"Detection: box={box}, score={score}")
         cx, cy = map(int, [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2 + 12.5])
         cz = self._get_depth(cx, cy)
         if cz is None:
@@ -474,7 +465,6 @@ class ObjectDetectionNode(Node):
         data = getter()
         while data is None or (isinstance(data, np.ndarray) and not data.any()):
             self.img_node.spin_once()
-            self.get_logger().info(f"Retry getting {description}.")
             data = getter()
         return data
 
