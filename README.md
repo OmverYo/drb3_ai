@@ -20,6 +20,8 @@ RealSense로 장기말을 인식(YOLOv11m)하고, ArUco Hand-Eye Calibration으�
 | 📅 기간 | 2026.08.31 ~ 2026.09.11 (팀 b-3, ROKEY 부트캠프 9기) |
 
 ---
+## 🎬 시연 영상
+> 🔗 https://drive.google.com/file/d/13B14_kTlK9BAab0RvGI5D7y2TOWHXLEW/view 
 
 📌 주요 기능 (Key Features)
 ---------------------------
