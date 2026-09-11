@@ -96,10 +96,10 @@ RealSense로 장기말을 인식(YOLOv11m)하고, ArUco Hand-Eye Calibration으�
 📌 개발 환경 (Environment)
 ---------------------------
 
-- **OS**: Ubuntu 22.04 LTS (Jazzy 호환 빌드) / Ubuntu 24.04 권장
-- **Middleware**: ROS 2 Jazzy Jalisco
+- **OS**: Ubuntu 24.04 권장
+- **Middleware**: ROS 2 Jazzy
 - **Container**: Docker (YOLOv11m 객체 검출 노드 격리 실행)
-- **Language**: Python 3.10+
+- **Language**: Python 3.12.3
 - **Database**: MongoDB Atlas
 - **Web Server**: Flask + Flask-SocketIO
 - **Key Libraries**: `rclpy`, `ultralytics`(YOLOv11), `opencv-python`, `mediapipe`, `openai-whisper`, `langchain-openai`, `pymongo`, `flask-socketio`
@@ -245,7 +245,7 @@ python3 app.py
 
 | 이름 | 담당 | 연락처 |
 |---|---|---|
-| 이동준 | YOLO 학습, Web·Server·DB, Git 협업 관리 | `omver5669@gmail.com` |
+| 이동준 | YOLO 학습, Web·Server·DB, Get Keyword 프롬프트, Git 협업 관리 | `omver5669@gmail.com` |
 | 이정섭 | Gesture 모델·통신, Docker 환경 | `jungsub27@gmail.com` |
 | 박세준 | ROS2 통신, DB 연결, 음성·손동작 제어, Segmentation | `sejun000220@gmail.com` |
 | 백승주 | 기획, 협업 일정 및 자료 관리, 발표 자료 | `raybaeksj@gmail.com` |
