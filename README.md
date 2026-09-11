@@ -61,6 +61,10 @@ RealSense로 장기말을 인식(YOLOv11m)하고, ArUco Hand-Eye Calibration으�
 📌 시스템 설계 (System Architecture)
 ------------------------------------
 
+<img width="1751" height="903" alt="Screenshot from 2026-09-11 11-48-23" src="https://github.com/user-attachments/assets/7e613620-c300-49d9-babd-cf510d339233" />
+<img width="1751" height="903" alt="Screenshot from 2026-09-11 11-48-35" src="https://github.com/user-attachments/assets/7a641100-4e73-459b-a45c-30f05e017442" />
+
+
 ### 전체 구조
 
 시스템은 크게 센싱(Sensing) → 인식·판단(Perception) → 좌표 변환(Transform) → 제어 실행(Control) 네 단계로 구성됩니다.
